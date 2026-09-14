@@ -1,0 +1,12 @@
+# layer 1: data
+duckdb>=1.5
+pyarrow>=20
+numpy>=2.2
+pandas>=2.2
+faker>=37
+# tests
+pytest>=8
+pyyaml>=6
+# layers 4+: model calls (key goes in .env)
+anthropic>=0.60
+python-dotenv>=1.0
