@@ -37,12 +37,21 @@ people_ai/
   requirements.txt
   .env.example
   data/                      # people.duckdb + parquet (duckdb gitignored if >50MB; parquet committed)
+  metadata/                  # source of truth for meaning; tested against the data
+    tables.yaml              #   every table and column: grain, keys, allowed values, references, sensitivity
+    facts.yaml               #   every number the docs quote, with its SQL and confirmed value
+    schema_doc_template.md   #   narrative for the schema doc
+    metrics.yaml             #   layer 2: metric definitions
   docs/
-    Synthetic_Talent_Lifecycle_Schema.md
-    metric_definitions.md    # layer 2 output, human-readable
+    Synthetic_Talent_Lifecycle_Schema.md   # generated from metadata/
+    metric_definitions.md    # layer 2 output, generated from metadata/metrics.yaml
     architecture.md          # layer 3+ diagrams and decisions
   src/people_ai/
     config.py                # paths, later model config
+    metadata/                # load and validate metadata/, render docs
+      catalog.py
+      facts.py
+      render_docs.py         #   python -m people_ai.metadata.render_docs [--check | --facts]
     generate_data.py         # layer 1 entry point: python -m people_ai.generate_data
     synthetic/               # layer 1 simulation
       params.py              #   every knob, including planted signals
@@ -78,6 +87,7 @@ people_ai/
   tests/
     test_data_integrity.py   # layer 1 structural rules
     test_planted_signals.py  # layer 1 known answers
+    test_metadata_matches_data.py  # metadata and generated docs agree with the data
   notebooks/                 # optional exploration
 ```
 
@@ -111,6 +121,9 @@ Acceptance, enforced by `tests/test_data_integrity.py` and `tests/test_planted_s
   - Interviewers are employed on the interview date.
   - Headline calibration numbers stay in range.
   - The planted signals still show up.
+- Every claim in `metadata/tables.yaml` and every number in `metadata/facts.yaml` holds against the data, and the generated schema doc is current (`tests/test_metadata_matches_data.py`).
+
+**Metadata catalog.** `metadata/tables.yaml` describes every table and column: meaning, grain, keys, allowed values, formats, ranges, references and sensitivity. The schema doc is generated from it together with `metadata/facts.yaml`, which holds every number the docs quote with its SQL and confirmed value. This is the same practice as validating a company wiki against sample data before building an AI application, made automatic so it can't go stale.
 
 Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_text`) are NULL for now. Each sits next to a ground-truth label, ready for an optional LLM text-generation step.
 
@@ -120,7 +133,7 @@ Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_te
 
 **Deliverables:**
 
-- `semantic/definitions.py`: a registry of metric definitions. Each has: name, plain-language definition, grain, required filters, SQL template or function, known edge cases, and the roles allowed to see it at individual vs aggregated level.
+- `metadata/metrics.yaml`: the registry of metric definitions, kept in YAML so non-engineers can review it. Each has: name, plain-language definition, grain, required filters, SQL template or function, known edge cases, and the roles allowed to see it at individual vs aggregated level. `semantic/definitions.py` loads and validates it, and tests check it against the data the same way as `tables.yaml`.
 - `semantic/metrics.py`: functions returning DataFrames, all taking `as_of` or a date range, and an optional `org_unit_id` scope. Minimum set:
   - `headcount(as_of, scope)`: point-in-time, active status, org tree as of that date
   - `hires(start, end, scope)`: external hires and rehires separately
@@ -140,7 +153,7 @@ Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_te
 
 - Every metric has a test with a hand-computed expected value on a small fixture.
 - `headcount('2023-03-31', team_19)` and `headcount('2023-04-30', team_19)` attribute the team to different parent orgs (the reorg).
-- Attrition for 2024 matches the calibration values recorded in the schema doc for SEED 42: 11.3% voluntary and a 34.5% regretted share.
+- `attrition` for 2024 reproduces the verified facts `voluntary_attrition_2024_pct` (11.3%) and `regretted_share_2024_pct` (34.5%) in `metadata/facts.yaml`.
 - No metric function accepts raw SQL from a caller.
 
 ### Layer 3: Authorization + MCP server
@@ -264,6 +277,7 @@ Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_te
 - Work one layer at a time. Do not start layer N+1 until layer N acceptance criteria pass in tests.
 - Before writing code for a layer, write its `docs/` section: what it does, the decisions, the definitions.
 - Every metric definition change updates `docs/metric_definitions.md` in the same commit.
+- Never hand-edit generated docs. Change `metadata/` and re-render; `tests/test_metadata_matches_data.py` fails when metadata, data and docs disagree.
 - Prefer small, readable functions over frameworks. Explain any dependency added.
 - Tests first for anything with an expected numeric answer.
 - Log every tool call. Never log secrets.

@@ -1,0 +1,540 @@
+# Catalog of every table in data/people.duckdb: the source of truth for what each table and column means.
+#
+# - tests/test_metadata_matches_data.py checks every claim here against the data (columns, types, NULLs,
+#   keys, allowed values, formats, ranges, references, placeholders).
+# - docs/Synthetic_Talent_Lifecycle_Schema.md is generated from this file: python -m people_ai.metadata.render_docs
+# - Layer 3's get_definition tool and layer 4's prompts will read it too.
+#
+# Column fields: name, type, description (required); nullable + null_means ("NULL means ..."), allowed_values,
+# pattern (regex, full match), range [min, max], references (table.column), sensitivity (overrides the table),
+# placeholder (text column that stays NULL until the text-generation step).
+version: 1
+
+sensitivity_levels:
+  reference: "Non-personal reference data: calendar, jobs, locations, pay bands, org structure, plans."
+  people: "Identifies employees or describes their employment history."
+  compensation: "Individual pay. Aggregates for everyone in scope; individual rows only for a manager's direct reports and an HRBP's subtree."
+  performance: "Individual ratings. Same rule as compensation."
+  engagement: "Survey answers. Never shown individually; aggregates suppressed below 5 respondents."
+  recruiting: "Requisitions, applications, interview outcomes and offers."
+  candidate_pii: "Candidate names and contact details. Recruiters and people analytics only."
+  access_control: "Who may see what."
+
+areas:
+  dimensions: "Dimensions and plans"
+  recruiting: "Recruiting (ATS)"
+  hris: "Employees (HRIS)"
+  governance: "Governance"
+
+time_kinds:
+  static: "No time dimension, or the row describes something that never changes."
+  effective_dated: "Versions with valid_from and valid_to (inclusive). Join on the id and the date."
+  event_log: "One row per change. State on date D is the latest row with a date on or before D."
+  snapshot: "State copied at fixed dates, derived from an event log."
+  periodic: "One row per cycle (survey, rating cycle, plan quarter)."
+  lifecycle: "One row per record, with milestone dates filled in as it progresses."
+
+tables:
+  # ------------------------------------------------------------------------------------------------ dimensions
+  - name: dim_date
+    area: dimensions
+    description: "Calendar. Fiscal year and quarter equal the calendar year and quarter."
+    grain: "one row per day from 2014-01-01 to 2025-12-31"
+    primary_key: [date]
+    time: static
+    sensitivity: reference
+    columns:
+      - {name: date, type: DATE, description: "Calendar day.", range: [2014-01-01, 2025-12-31]}
+      - {name: date_key, type: BIGINT, description: "The date as yyyymmdd.", range: [20140101, 20251231]}
+      - {name: fiscal_year, type: BIGINT, description: "Calendar year.", range: [2014, 2025]}
+      - {name: fiscal_quarter, type: BIGINT, description: "Calendar quarter.", range: [1, 4]}
+      - {name: month, type: BIGINT, description: "Month number.", range: [1, 12]}
+      - {name: day_of_week, type: BIGINT, description: "ISO day of week, 1 = Monday.", range: [1, 7]}
+      - {name: is_month_end, type: BOOLEAN, description: "Last day of the month."}
+      - {name: is_quarter_end, type: BOOLEAN, description: "Last day of a quarter."}
+      - {name: is_year_end, type: BOOLEAN, description: "December 31."}
+
+  - name: dim_org_unit
+    area: dimensions
+    description: "The org tree, effective dated. A unit keeps its id across versions; only its parent changes."
+    grain: "one row per org unit version"
+    primary_key: [org_unit_id, valid_from]
+    time: effective_dated
+    sensitivity: reference
+    rules:
+      - "Always join on `org_unit_id` and the date: `D between valid_from and valid_to`. Joining on id alone double counts units that moved."
+      - "Reorg 1 on 2023-04-01 moves team 19 (App Experience) from Mobile to Growth. Reorg 2 on 2024-09-01 creates Applied AI (64) and moves teams 49 and 50 under it."
+    columns:
+      - {name: org_unit_id, type: BIGINT, description: "Stable id of the unit."}
+      - {name: org_unit_name, type: VARCHAR, description: "Unique name, e.g. Checkout."}
+      - {name: parent_org_unit_id, type: BIGINT, nullable: true, null_means: "the company itself (top of the tree)",
+         references: dim_org_unit.org_unit_id, description: "Parent during this version."}
+      - {name: org_level, type: BIGINT, range: [1, 4], description: "1 company, 2 division, 3 org, 4 team."}
+      - {name: valid_from, type: DATE, range: [2014-01-01, 2025-12-31], description: "First day this version applies. Original units start 2014-01-01."}
+      - {name: valid_to, type: DATE, range: [2014-01-01, 9999-12-31], description: "Last day this version applies; 9999-12-31 while current."}
+
+  - name: dim_location
+    area: dimensions
+    description: "Office locations."
+    grain: "one row per location"
+    primary_key: [location_id]
+    time: static
+    sensitivity: reference
+    columns:
+      - {name: location_id, type: BIGINT, description: "Location id."}
+      - {name: city, type: VARCHAR, description: "City.", allowed_values: [Seattle, San Diego, Austin, Toronto, Dublin, London, Bangalore, Tokyo]}
+      - {name: country, type: VARCHAR, description: "Country code.", allowed_values: [US, CA, IE, UK, IN, JP]}
+      - {name: region, type: VARCHAR, description: "Region.", allowed_values: [AMER, EMEA, APAC]}
+      - {name: cost_of_living_index, type: DOUBLE, range: [0.4, 1.3], description: "Multiplier applied to pay bands (Austin = 1.0)."}
+
+  - name: dim_job
+    area: dimensions
+    description: "Job catalog: family, track and level."
+    grain: "one row per job"
+    primary_key: [job_id]
+    time: static
+    sensitivity: reference
+    rules:
+      - "IC levels 3-7 run Associate, (none), Senior, Staff, Principal. Manager levels 6-9 run Manager, Senior Manager, Director, VP. The CEO is level 10."
+    columns:
+      - {name: job_id, type: BIGINT, description: "Job id."}
+      - {name: job_family, type: VARCHAR, description: "Job family.",
+         allowed_values: [Engineering, Data, Product, Design, Sales, Marketing, Customer Success, People, Finance, Legal, Executive]}
+      - {name: job_track, type: VARCHAR, allowed_values: [IC, M, E], description: "IC = individual contributor, M = people manager, E = executive (CEO)."}
+      - {name: job_level, type: BIGINT, range: [3, 10], description: "Level. IC and M overlap at 6-7."}
+      - {name: job_title, type: VARCHAR, description: "Title, e.g. Senior Software Engineer or Director, Data Science."}
+      - {name: is_manager_role, type: BOOLEAN, description: "True for the M and E tracks."}
+
+  - name: dim_comp_band
+    area: dimensions
+    description: "Pay bands per job and location, one version per calendar year."
+    grain: "one row per job, location and year"
+    primary_key: [job_id, location_id, valid_from]
+    time: effective_dated
+    sensitivity: reference
+    rules:
+      - "min = 0.8 x mid and max = 1.2 x mid. Mid rises 3.5% a year; 2024 adds a one-time market jump of +12% for Data and +6% for Engineering."
+      - "Compa-ratio on date D = base salary on D / mid_salary of the band valid on D for the employee's job and location on D."
+    columns:
+      - {name: job_id, type: BIGINT, references: dim_job.job_id, description: "Job."}
+      - {name: location_id, type: BIGINT, references: dim_location.location_id, description: "Location."}
+      - {name: valid_from, type: DATE, range: [2021-01-01, 2025-01-01], description: "January 1 of the band year."}
+      - {name: valid_to, type: DATE, range: [2021-12-31, 9999-12-31], description: "December 31 of the band year; 9999-12-31 for the latest year."}
+      - {name: min_salary, type: BIGINT, description: "Band minimum."}
+      - {name: mid_salary, type: BIGINT, description: "Band midpoint."}
+      - {name: max_salary, type: BIGINT, description: "Band maximum."}
+      - {name: currency, type: VARCHAR, allowed_values: [USD], description: "Always USD."}
+
+  - name: headcount_plan
+    area: dimensions
+    description: "Planned headcount per level-3 org and quarter."
+    grain: "one row per org and quarter end"
+    primary_key: [org_unit_id, quarter_end]
+    time: periodic
+    sensitivity: reference
+    rules:
+      - "Set on January 1 and re-set on each reorg date for the remaining quarters of that year."
+      - "Compare with actual headcount rolled up using the org tree valid on quarter_end."
+    columns:
+      - {name: org_unit_id, type: BIGINT, references: dim_org_unit.org_unit_id, description: "Level-3 org."}
+      - {name: quarter_end, type: DATE, range: [2021-03-31, 2025-12-31], description: "Last day of the quarter."}
+      - {name: fiscal_year, type: BIGINT, range: [2021, 2025], description: "Plan year."}
+      - {name: fiscal_quarter, type: BIGINT, range: [1, 4], description: "Plan quarter."}
+      - {name: planned_headcount, type: BIGINT, description: "Planned active headcount at quarter end."}
+      - {name: plan_version_date, type: DATE, range: [2021-01-01, 2025-12-31], description: "When this plan value was set: January 1 or a reorg date."}
+
+  # ------------------------------------------------------------------------------------------------ recruiting
+  - name: requisition
+    area: recruiting
+    description: "An approved opening to hire one person into a team."
+    grain: "one row per opening"
+    primary_key: [req_id]
+    time: lifecycle
+    sensitivity: recruiting
+    rules:
+      - "Time to fill = days from approved_date to closed_date, for close_reason = 'filled' only."
+      - "Every backfill points at a termination dated on or before opened_date."
+    columns:
+      - {name: req_id, type: BIGINT, description: "Requisition id."}
+      - {name: org_unit_id, type: BIGINT, references: dim_org_unit.org_unit_id, description: "Hiring team (level 4)."}
+      - {name: job_id, type: BIGINT, references: dim_job.job_id, description: "The role. Always an IC job."}
+      - {name: location_id, type: BIGINT, references: dim_location.location_id, description: "Where the role sits."}
+      - {name: hiring_manager_employee_id, type: BIGINT, references: employee.employee_id, description: "Hiring manager when the req opened."}
+      - {name: recruiter_employee_id, type: BIGINT, references: employee.employee_id, description: "Recruiter from the Talent Acquisition team."}
+      - {name: headcount_type, type: VARCHAR, allowed_values: [new, backfill], description: "new = growth, backfill = replaces someone who left."}
+      - {name: backfill_for_employee_id, type: BIGINT, nullable: true, null_means: "a growth req (headcount_type = new)",
+         references: employee.employee_id, description: "The terminated employee being replaced."}
+      - {name: opened_date, type: DATE, range: [2021-01-01, 2025-12-31], description: "Req opened."}
+      - {name: approved_date, type: DATE, nullable: true, null_means: "opened in the last days of 2025 and not yet approved at END",
+         range: [2021-01-01, 2025-12-31], description: "Approved; sourcing starts this day."}
+      - {name: target_start_date, type: DATE, range: [2021-01-01, 2026-12-31], description: "Planned start date. A plan, so it may fall after END."}
+      - {name: closed_date, type: DATE, nullable: true, null_means: "still open at END", range: [2021-01-01, 2025-12-31],
+         description: "Closed: the day an offer was accepted, or the day it was cancelled."}
+      - {name: close_reason, type: VARCHAR, nullable: true, null_means: "still open at END",
+         allowed_values: [filled, cancelled_no_hire, cancelled_business_change, cancelled_hiring_freeze],
+         description: "cancelled_no_hire = three sourcing rounds without a hire."}
+
+  - name: candidate
+    area: recruiting
+    description: "A person in the recruiting system. The same candidate can apply to several reqs."
+    grain: "one row per person"
+    primary_key: [candidate_id]
+    time: static
+    sensitivity: recruiting
+    columns:
+      - {name: candidate_id, type: BIGINT, description: "Candidate id."}
+      - {name: first_name, type: VARCHAR, sensitivity: candidate_pii, description: "Fake first name."}
+      - {name: last_name, type: VARCHAR, sensitivity: candidate_pii, description: "Fake last name."}
+      - {name: email, type: VARCHAR, sensitivity: candidate_pii, pattern: '[a-z]*\.[a-z]*\.[0-9]+@(example\.com|acme\.example)',
+         description: "Fake email. Internal applicants keep their work email."}
+      - {name: phone, type: VARCHAR, sensitivity: candidate_pii, pattern: '\+1-[0-9]{3}-555-01[0-9]{2}', description: "Fictional 555-01XX number."}
+      - {name: location_id, type: BIGINT, references: dim_location.location_id, description: "Where the candidate lives."}
+      - {name: years_experience, type: BIGINT, range: [0, 20], description: "Years of experience."}
+      - {name: current_company, type: VARCHAR, description: "Fake current employer; Acme Corp for internal applicants."}
+      - {name: highest_degree, type: VARCHAR, description: "Highest education listed.",
+         allowed_values: ["Bachelor's", "Master's", PhD, Bootcamp / certificate, None listed]}
+      - {name: skills, type: VARCHAR, description: "Semicolon-separated skills. Ground truth for resume_text."}
+      - {name: internal_employee_id, type: BIGINT, nullable: true, null_means: "never applied while employed at Acme",
+         references: employee.employee_id, description: "Employee id when the candidate applied as a current employee."}
+      - {name: former_employee_id, type: BIGINT, nullable: true, null_means: "never applied as a former employee",
+         references: employee.employee_id, description: "Employee id when the candidate applied as a former employee (boomerang)."}
+      - {name: created_date, type: DATE, range: [2021-01-01, 2025-12-31], description: "First application date."}
+      - name: resume_text
+        type: VARCHAR
+        nullable: true
+        null_means: "not generated yet"
+        sensitivity: candidate_pii
+        description: "Resume text."
+        placeholder:
+          generate_from: "skills, years_experience, current_company, highest_degree, family of the jobs applied to"
+          practice: "structured extraction, resume-to-job matching with embeddings, PII redaction, planted prompt-injection resumes"
+
+  - name: application
+    area: recruiting
+    description: "One candidate applying to one req."
+    grain: "one row per candidate per req"
+    primary_key: [application_id]
+    time: lifecycle
+    sensitivity: recruiting
+    rules:
+      - "candidate_type is the truth about who applied; candidate.internal_employee_id and former_employee_id only say the person applied that way at some point."
+      - "For channel analysis of external sourcing, filter candidate_type = 'external'; internal applicants convert far better."
+    columns:
+      - {name: application_id, type: BIGINT, description: "Application id."}
+      - {name: candidate_id, type: BIGINT, references: candidate.candidate_id, description: "Who applied."}
+      - {name: req_id, type: BIGINT, references: requisition.req_id, description: "What they applied to."}
+      - {name: candidate_type, type: VARCHAR, allowed_values: [external, internal, boomerang],
+         description: "internal = current employee, boomerang = former employee."}
+      - {name: source_channel, type: VARCHAR, allowed_values: [inbound, referral, sourced, agency, campus, internal_mobility],
+         description: "How the application arrived; internal_mobility for internal applicants."}
+      - {name: applied_date, type: DATE, range: [2021-01-01, 2025-12-31], description: "Applied; on or after the req's approved_date."}
+      - {name: current_stage, type: VARCHAR, allowed_values: [applied, recruiter_screen, hiring_manager_screen, onsite, offer],
+         description: "Last stage entered."}
+      - {name: current_stage_date, type: DATE, range: [2021-01-01, 2025-12-31], description: "When current_stage was entered."}
+      - {name: final_disposition, type: VARCHAR, allowed_values: [hired, rejected, withdrawn, in_process],
+         description: "Outcome; in_process only for applications still open at END."}
+      - {name: disposition_date, type: DATE, nullable: true, null_means: "still in process at END", range: [2021-01-01, 2025-12-31],
+         description: "When the outcome was decided."}
+      - {name: disposition_reason, type: VARCHAR, nullable: true, null_means: "hired, or still in process",
+         allowed_values: [rejected_at_applied, rejected_at_recruiter_screen, rejected_at_hiring_manager_screen, rejected_at_onsite,
+                          candidate_withdrew, declined_offer, position_filled, req_cancelled, not_selected, candidate_left_company],
+         description: "Why it ended without a hire."}
+
+  - name: application_stage_event
+    area: recruiting
+    description: "Each stage an application entered, in order: applied (resume review), recruiter_screen, hiring_manager_screen, onsite, offer."
+    grain: "one row per application per stage entered"
+    primary_key: [stage_event_id]
+    time: event_log
+    sensitivity: recruiting
+    rules:
+      - "Conversion at a stage = rows with outcome advance (or accept at offer) / rows with a non-NULL outcome."
+    columns:
+      - {name: stage_event_id, type: BIGINT, description: "Stage event id."}
+      - {name: application_id, type: BIGINT, references: application.application_id, description: "Application."}
+      - {name: stage, type: VARCHAR, allowed_values: [applied, recruiter_screen, hiring_manager_screen, onsite, offer], description: "Stage."}
+      - {name: entered_date, type: DATE, range: [2021-01-01, 2025-12-31], description: "Entered the stage."}
+      - {name: exited_date, type: DATE, nullable: true, null_means: "the stage was still open at END", range: [2021-01-01, 2025-12-31],
+         description: "Left the stage."}
+      - {name: outcome, type: VARCHAR, nullable: true, null_means: "the stage was still open at END",
+         allowed_values: [advance, reject, withdraw, accept, decline], description: "accept and decline only occur at the offer stage."}
+
+  - name: interview_scorecard
+    area: recruiting
+    description: "One interviewer's verdict on one interview."
+    grain: "one row per interviewer per interview stage"
+    primary_key: [scorecard_id]
+    time: event_log
+    sensitivity: recruiting
+    rules:
+      - "Recruiter screen: the recruiter. Hiring manager screen: the hiring manager. Onsite: the hiring manager plus up to 3 team members."
+      - "Recommendations mostly agree with the stage outcome, with deliberate disagreements."
+    columns:
+      - {name: scorecard_id, type: BIGINT, description: "Scorecard id."}
+      - {name: application_id, type: BIGINT, references: application.application_id, description: "Application."}
+      - {name: stage, type: VARCHAR, allowed_values: [recruiter_screen, hiring_manager_screen, onsite], description: "Interview stage."}
+      - {name: interviewer_employee_id, type: BIGINT, references: employee.employee_id, description: "Interviewer; always active on submitted_date."}
+      - {name: submitted_date, type: DATE, range: [2021-01-01, 2025-12-31], description: "Submitted; the day the stage was decided."}
+      - {name: recommendation, type: VARCHAR, allowed_values: [strong_yes, "yes", "no", strong_no], description: "Interviewer's recommendation."}
+      - name: feedback_text
+        type: VARCHAR
+        nullable: true
+        null_means: "not generated yet"
+        description: "Written interview feedback."
+        placeholder:
+          generate_from: "stage, recommendation, application outcome"
+          practice: "summarization, checking a summary agrees with the hiring decision"
+
+  - name: offer
+    area: recruiting
+    description: "An offer extended to an application that passed onsite."
+    grain: "one row per offer (at most one per application)"
+    primary_key: [offer_id]
+    unique: [[application_id]]
+    time: lifecycle
+    sensitivity: recruiting
+    rules:
+      - "An accepted offer becomes an employee only on start_date. Offers starting after END never appear in HRIS."
+    columns:
+      - {name: offer_id, type: BIGINT, description: "Offer id."}
+      - {name: application_id, type: BIGINT, references: application.application_id, description: "Application."}
+      - {name: extended_date, type: DATE, range: [2021-01-01, 2025-12-31], description: "Offer extended."}
+      - {name: job_id, type: BIGINT, references: dim_job.job_id, description: "Offered job."}
+      - {name: job_level, type: BIGINT, range: [3, 7], description: "Offered level."}
+      - {name: location_id, type: BIGINT, references: dim_location.location_id, description: "Offered location."}
+      - {name: base_salary_offered, type: BIGINT, sensitivity: compensation, description: "Offered base salary (USD)."}
+      - {name: decision, type: VARCHAR, nullable: true, null_means: "awaiting a decision at END", allowed_values: [accepted, declined],
+         description: "Candidate's decision."}
+      - {name: decision_date, type: DATE, nullable: true, null_means: "awaiting a decision at END", range: [2021-01-01, 2025-12-31],
+         description: "Decided."}
+      - {name: decline_reason, type: VARCHAR, nullable: true, null_means: "accepted or undecided",
+         allowed_values: [comp, competing_offer, role_scope, location, personal, left_company],
+         description: "Why it was declined; left_company = an internal candidate left before deciding."}
+      - {name: competing_offer_flag, type: BOOLEAN, description: "Candidate reported another offer."}
+      - {name: start_date, type: DATE, nullable: true, null_means: "declined or undecided", range: [2021-01-01, 2026-12-31],
+         description: "Agreed start date. May fall after END."}
+
+  # ------------------------------------------------------------------------------------------------ hris
+  - name: employee
+    area: hris
+    description: "Everyone ever employed. Identity only: all state (team, job, manager, status) lives in employment_event."
+    grain: "one row per person ever employed"
+    primary_key: [employee_id]
+    time: static
+    sensitivity: people
+    rules:
+      - "Rehires keep their employee_id; their history is one timeline in employment_event."
+    columns:
+      - {name: employee_id, type: BIGINT, description: "Employee id, also user_id in user_role."}
+      - {name: first_name, type: VARCHAR, description: "Fake first name."}
+      - {name: last_name, type: VARCHAR, description: "Fake last name."}
+      - {name: legal_name, type: VARCHAR, description: "First and last name. Not unique."}
+      - {name: work_email, type: VARCHAR, pattern: '[a-z]*\.[a-z]*\.[0-9]+@acme\.example', description: "Fake work email."}
+      - {name: original_hire_date, type: DATE, range: [2014-01-01, 2025-12-31], description: "First hire."}
+      - {name: most_recent_hire_date, type: DATE, range: [2014-01-01, 2025-12-31], description: "Latest hire or rehire; tenure counts from here."}
+      - {name: is_rehire, type: BOOLEAN, description: "Has at least one rehire event."}
+
+  - name: employment_event
+    area: hris
+    description: "The source of truth for employment. Every hire, rehire, transfer, promotion, job change, manager change, leave and termination is a row."
+    grain: "one row per change, at most one per employee per day"
+    primary_key: [event_id]
+    unique: [[employee_id, effective_date]]
+    time: event_log
+    sensitivity: people
+    rules:
+      - "State on date D = the employee's latest event with effective_date <= D. The row holds the full state after the change."
+      - "effective_date is the first day of the new state: a termination dated D means not employed on D."
+      - "Same-day changes merge into one row; the more important type wins (termination > hire/rehire > transfer > promotion > job_change/leave > manager_change)."
+      - "First event is always hire. After a termination the only next event is rehire. leave_return only follows leave."
+      - "Everyone employed on 2021-01-01 has one hire event (event_reason = initial_load) at their real hire date, carrying their 2021-01-01 state. Analyze dynamics from 2021 on."
+      - "A reorg moves teams in dim_org_unit; team members get no event."
+    columns:
+      - {name: event_id, type: BIGINT, description: "Chronological event id."}
+      - {name: employee_id, type: BIGINT, references: employee.employee_id, description: "Employee."}
+      - {name: event_type, type: VARCHAR, description: "What changed.",
+         allowed_values: [hire, rehire, transfer, promotion, job_change, manager_change, leave_start, leave_return, termination]}
+      - {name: effective_date, type: DATE, range: [2014-01-01, 2025-12-31], description: "First day the new state applies."}
+      - {name: org_unit_id, type: BIGINT, references: dim_org_unit.org_unit_id, description: "Unit after the event: a team, or an org/division for leaders."}
+      - {name: job_id, type: BIGINT, references: dim_job.job_id, description: "Job after the event."}
+      - {name: job_level, type: BIGINT, range: [3, 10], description: "Level after the event."}
+      - {name: location_id, type: BIGINT, references: dim_location.location_id, description: "Location after the event."}
+      - {name: manager_employee_id, type: BIGINT, nullable: true, null_means: "the CEO",
+         references: employee.employee_id, description: "Manager after the event."}
+      - {name: employment_status, type: VARCHAR, allowed_values: [active, leave, terminated], description: "Status after the event."}
+      - name: event_reason
+        type: VARCHAR
+        nullable: true
+        null_means: "no reason recorded (external hires, rehires, leaves)"
+        description: "hire: initial_load. transfer: lateral_move, internal_application. promotion and job_change: cycle, succession, new_people_manager, reorg. manager_change: manager_departed, reorg. termination: the exit reason."
+        allowed_values: [initial_load, lateral_move, internal_application, cycle, succession, new_people_manager, reorg, manager_departed,
+                         career_growth, comp, manager, relocation, personal, competing_offer, performance, misconduct, restructuring, reduction_in_force]
+      - {name: application_id, type: BIGINT, nullable: true, null_means: "not a hire, rehire or internal-application transfer",
+         references: application.application_id, description: "The application that led to this hire or move: the HRIS-to-ATS join."}
+
+  - name: employee_snapshot_monthly
+    area: hris
+    description: "Month-end state of everyone active or on leave, derived from employment_event. A convenience copy: if it disagrees with events, the snapshot is wrong."
+    grain: "one row per employee per month end"
+    primary_key: [snapshot_date, employee_id]
+    time: snapshot
+    sensitivity: people
+    rules:
+      - "Headcount excludes employment_status = 'leave' unless a question asks to include it."
+    columns:
+      - {name: snapshot_date, type: DATE, range: [2021-01-31, 2025-12-31], description: "Month end."}
+      - {name: employee_id, type: BIGINT, references: employee.employee_id, description: "Employee."}
+      - {name: org_unit_id, type: BIGINT, references: dim_org_unit.org_unit_id, description: "Unit on snapshot_date."}
+      - {name: job_id, type: BIGINT, references: dim_job.job_id, description: "Job on snapshot_date."}
+      - {name: job_level, type: BIGINT, range: [3, 10], description: "Level on snapshot_date."}
+      - {name: location_id, type: BIGINT, references: dim_location.location_id, description: "Location on snapshot_date."}
+      - {name: manager_employee_id, type: BIGINT, nullable: true, null_means: "the CEO",
+         references: employee.employee_id, description: "Manager on snapshot_date."}
+      - {name: employment_status, type: VARCHAR, allowed_values: [active, leave], description: "Status on snapshot_date."}
+      - {name: tenure_months, type: BIGINT, range: [0, 200], description: "Months since most recent hire or rehire."}
+
+  - name: compensation
+    area: hris
+    description: "Pay changes."
+    grain: "one row per pay change, at most one per employee per day"
+    primary_key: [employee_id, effective_date]
+    time: event_log
+    sensitivity: compensation
+    rules:
+      - "Pay on date D = the latest row with effective_date <= D."
+      - "Merit increases land every March 1; promotion raises on the promotion date."
+    columns:
+      - {name: employee_id, type: BIGINT, references: employee.employee_id, description: "Employee."}
+      - {name: effective_date, type: DATE, range: [2014-01-01, 2025-12-31], description: "First day this pay applies."}
+      - {name: base_salary, type: BIGINT, description: "Annual base salary (USD)."}
+      - {name: currency, type: VARCHAR, allowed_values: [USD], description: "Always USD."}
+      - {name: bonus_target_pct, type: DOUBLE, range: [0, 1], description: "Bonus target as a fraction of base; Sales adds 0.25 variable."}
+      - {name: equity_grant_value, type: BIGINT, description: "Equity granted with this change (USD); 0 when none."}
+      - {name: comp_change_reason, type: VARCHAR, allowed_values: [hire, rehire, merit, promotion, transfer, relocation, job_change],
+         description: "Why pay changed."}
+
+  - name: performance_rating
+    area: hris
+    description: "Twice-yearly performance ratings."
+    grain: "one row per employee per rating cycle"
+    primary_key: [employee_id, cycle]
+    time: periodic
+    sensitivity: performance
+    rules:
+      - "Only people employed on rating_date with at least 90 days of tenure are rated."
+    columns:
+      - {name: employee_id, type: BIGINT, references: employee.employee_id, description: "Employee."}
+      - {name: cycle, type: VARCHAR, pattern: '[0-9]{4}H[12]', description: "Cycle, e.g. 2024H2."}
+      - {name: rating_date, type: DATE, range: [2021-06-30, 2025-12-31], description: "June 30 or December 31."}
+      - {name: rating, type: BIGINT, range: [1, 5], description: "1 (lowest) to 5; roughly 3/12/55/22/8% of ratings."}
+      - {name: calibrated_flag, type: BOOLEAN, allowed_values: [true], description: "Always true in this dataset."}
+      - {name: manager_employee_id_at_cycle, type: BIGINT, nullable: true, null_means: "the CEO",
+         references: employee.employee_id, description: "Manager on rating_date."}
+
+  - name: termination
+    area: hris
+    description: "Details of each exit. One row per termination event."
+    grain: "one row per exit (a rehired person can have several)"
+    primary_key: [employee_id, termination_date]
+    time: event_log
+    sensitivity: people
+    rules:
+      - "Voluntary attrition = voluntary terminations in the period / average month-end active headcount, annualized."
+      - "Regretted attrition = voluntary terminations with regretted_flag = true."
+    columns:
+      - {name: employee_id, type: BIGINT, references: employee.employee_id, description: "Employee."}
+      - {name: termination_date, type: DATE, range: [2021-01-01, 2025-12-31], description: "First day not employed."}
+      - {name: termination_type, type: VARCHAR, allowed_values: [voluntary, involuntary], description: "Who decided."}
+      - {name: exit_reason, type: VARCHAR, description: "Voluntary: career_growth, comp, manager, relocation, personal, competing_offer. Involuntary: performance, misconduct, restructuring, reduction_in_force (the 2023-02-15 layoff).",
+         allowed_values: [career_growth, comp, manager, relocation, personal, competing_offer, performance, misconduct, restructuring, reduction_in_force]}
+      - {name: regretted_flag, type: BOOLEAN, description: "Voluntary and last_rating >= 4."}
+      - {name: rehire_eligible, type: BOOLEAN, description: "Voluntary and last_rating >= 3."}
+      - {name: last_org_unit_id, type: BIGINT, references: dim_org_unit.org_unit_id, description: "Unit on the last working day."}
+      - {name: last_job_id, type: BIGINT, references: dim_job.job_id, description: "Job on the last working day."}
+      - {name: last_job_level, type: BIGINT, range: [3, 10], description: "Level on the last working day."}
+      - {name: last_manager_employee_id, type: BIGINT, references: employee.employee_id,
+         description: "Manager on the last working day. Never NULL: the CEO does not leave in this dataset."}
+      - {name: last_rating, type: BIGINT, range: [1, 5], sensitivity: performance, description: "Latest rating before exit."}
+      - name: exit_interview_text
+        type: VARCHAR
+        nullable: true
+        null_means: "not generated yet"
+        description: "Exit interview notes."
+        placeholder:
+          generate_from: "exit_reason, regretted_flag, last_rating"
+          practice: "classification accuracy against exit_reason"
+
+  - name: engagement_response
+    area: hris
+    description: "Annual engagement survey answers (October 15, about 74% response)."
+    grain: "one row per respondent per survey cycle"
+    primary_key: [response_id]
+    unique: [[survey_cycle, employee_id]]
+    time: periodic
+    sensitivity: engagement
+    rules:
+      - "Never show an individual response. Suppress any aggregate with fewer than 5 respondents."
+    columns:
+      - {name: response_id, type: BIGINT, description: "Response id."}
+      - {name: survey_cycle, type: VARCHAR, pattern: '[0-9]{4}', description: "Survey year."}
+      - {name: response_date, type: DATE, range: [2021-10-15, 2025-10-15], description: "Survey date."}
+      - {name: employee_id, type: BIGINT, references: employee.employee_id, description: "Respondent. Present for authorization testing; real survey tools hide it."}
+      - {name: org_unit_id, type: BIGINT, references: dim_org_unit.org_unit_id, description: "Respondent's unit on response_date."}
+      - {name: manager_employee_id, type: BIGINT, nullable: true, null_means: "the respondent is the CEO",
+         references: employee.employee_id, description: "Respondent's manager on response_date."}
+      - {name: engagement_score, type: DOUBLE, range: [1, 5], description: "Overall engagement, 1 to 5."}
+      - {name: manager_score, type: DOUBLE, range: [1, 5], description: "Rating of their manager, 1 to 5."}
+      - {name: growth_score, type: DOUBLE, range: [1, 5], description: "Career growth, 1 to 5."}
+      - {name: comment_theme, type: VARCHAR, description: "What the comment is about; none = no comment. Ground truth for comment_text.",
+         allowed_values: [manager, comp, career_growth, reorg, workload, tools, team_positive, mission_positive, none]}
+      - {name: comment_sentiment, type: VARCHAR, nullable: true, null_means: "no comment (comment_theme = none)",
+         allowed_values: [negative, positive], description: "Sentiment of the comment."}
+      - name: comment_text
+        type: VARCHAR
+        nullable: true
+        null_means: "not generated yet"
+        description: "Free-text comment."
+        placeholder:
+          generate_from: "comment_theme, comment_sentiment (theme none stays empty)"
+          practice: "theme and sentiment classification, suppression of small groups"
+
+  # ------------------------------------------------------------------------------------------------ governance
+  - name: user_role
+    area: governance
+    description: "Effective-dated access grants. user_id is an employee_id."
+    grain: "one row per grant interval"
+    unique: [[user_id, role, scope_org_unit_id, valid_from]]
+    time: effective_dated
+    sensitivity: access_control
+    rules:
+      - "manager: while the person has at least one direct report; scope is their whole reporting tree on the date."
+      - "hrbp: exactly one per level-3 org at all times; scope is that org's subtree on the date."
+      - "executive: division VPs (their division) and the CEO (the company); aggregates only, below team level."
+      - "people_analytics: members of the People Analytics team; everything."
+      - "A grant ends the day before the person leaves the position or the company, and the successor's starts that day. Leave does not suspend access."
+    columns:
+      - {name: user_id, type: BIGINT, references: employee.employee_id, description: "The employee holding the grant."}
+      - {name: role, type: VARCHAR, allowed_values: [manager, hrbp, executive, people_analytics], description: "Role."}
+      - {name: scope_type, type: VARCHAR, allowed_values: [reporting_tree, org_subtree, aggregate_subtree, all],
+         description: "How scope is resolved: manager, hrbp, executive, people_analytics respectively."}
+      - {name: scope_org_unit_id, type: BIGINT, nullable: true, null_means: "role = manager: scope is people (the reporting tree), not an org unit",
+         references: dim_org_unit.org_unit_id, description: "Root of the scope."}
+      - {name: valid_from, type: DATE, range: [2021-01-01, 2025-12-31], description: "First day of the grant. Grants existing at START begin 2021-01-01."}
+      - {name: valid_to, type: DATE, range: [2021-01-01, 9999-12-31], description: "Last day of the grant; 9999-12-31 while current."}
+
+  - name: demo_user
+    area: governance
+    description: "Stable personas for tests, evals and demos, valid on 2025-12-31. Look personas up by name; ids are only stable for one seed."
+    grain: "one row per persona"
+    primary_key: [persona]
+    time: static
+    sensitivity: access_control
+    columns:
+      - {name: persona, type: VARCHAR, description: "Persona name.",
+         allowed_values: [people_analytics, hrbp_ai_platform, executive_platform, ceo, manager_checkout_lead, manager_team_19_lead,
+                          manager_small_team, former_manager, ic_no_access, planted_bad_manager]}
+      - {name: user_id, type: BIGINT, references: employee.employee_id, description: "Employee id to act as."}
+      - {name: role, type: VARCHAR, allowed_values: [people_analytics, hrbp, executive, manager, none], description: "Role on 2025-12-31."}
+      - {name: scope_org_unit_id, type: BIGINT, nullable: true, null_means: "no org scope (a manager, or no role)",
+         references: dim_org_unit.org_unit_id, description: "Scope root for hrbp, executive and people_analytics."}
+      - {name: description, type: VARCHAR, description: "What the persona is for."}

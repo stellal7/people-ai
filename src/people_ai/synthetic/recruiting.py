@@ -72,12 +72,15 @@ class Recruiting:
                    backfill_for_employee_id=backfill_for, opened_date=when,
                    approved_date=when + days(self.rng.randint(2, 14)),
                    target_start_date=when + days(self.rng.randint(60, 120)), closed_date=None, close_reason=None)
+        approved = req["approved_date"]
+        if approved > P.END:                    # approval hasn't happened yet at END
+            req["approved_date"] = None
         self.reqs.append(req)
         self.req_state[req["req_id"]] = dict(batches=0, expected=0, in_flight=set(), outstanding=None,
                                              filled=False, batch_pending=True)
-        self.later(req["approved_date"], self.start_batch, req)
+        self.later(approved, self.start_batch, req)
         if self.rng.random() < P.BUSINESS_CANCEL_RATE:
-            self.later(req["approved_date"] + days(self.rng.randint(20, 100)), self.cancel_req, req, "cancelled_business_change")
+            self.later(approved + days(self.rng.randint(20, 100)), self.cancel_req, req, "cancelled_business_change")
 
     def close_req(self, req, when, reason):
         if req["closed_date"] is not None:

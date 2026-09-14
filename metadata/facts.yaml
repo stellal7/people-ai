@@ -1,0 +1,368 @@
+# Verified facts: numbers the docs quote, each with the SQL that produces it and the value a person confirmed.
+#
+# - tests/test_metadata_matches_data.py fails if a live value differs from `expected`, so a regenerated or
+#   changed dataset can never silently contradict the docs.
+# - The schema doc renders `expected`, never the live value.
+# - When data changes on purpose: `python -m people_ai.metadata.render_docs --facts` shows live vs expected;
+#   review each difference, then update `expected`.
+# - Layer 6 golden questions can reuse these as known answers.
+#
+# Fact fields: id, description, sql, expected. Table facts add `columns` (headers); `plain` lists values
+# rendered without thousands separators (ids, years).
+version: 1
+
+setup:
+  - |
+    create or replace temp view v_active_by_division as
+    select s.snapshot_date, s.employee_id,
+           case o1.org_level when 1 then null when 2 then o1.org_unit_id when 3 then o1.parent_org_unit_id
+                else o2.parent_org_unit_id end as division_id
+    from employee_snapshot_monthly s
+    join dim_org_unit o1 on o1.org_unit_id = s.org_unit_id and s.snapshot_date between o1.valid_from and o1.valid_to
+    left join dim_org_unit o2 on o2.org_unit_id = o1.parent_org_unit_id and s.snapshot_date between o2.valid_from and o2.valid_to
+    where s.employment_status = 'active'
+  - |
+    create or replace temp view v_exits_by_division as
+    select t.*,
+           case o1.org_level when 1 then null when 2 then o1.org_unit_id when 3 then o1.parent_org_unit_id
+                else o2.parent_org_unit_id end as division_id
+    from termination t
+    join dim_org_unit o1 on o1.org_unit_id = t.last_org_unit_id and t.termination_date - 1 between o1.valid_from and o1.valid_to
+    left join dim_org_unit o2 on o2.org_unit_id = o1.parent_org_unit_id and t.termination_date - 1 between o2.valid_from and o2.valid_to
+  - |
+    create or replace temp view v_engagement_by_division as
+    select r.*,
+           case o1.org_level when 1 then null when 2 then o1.org_unit_id when 3 then o1.parent_org_unit_id
+                else o2.parent_org_unit_id end as division_id
+    from engagement_response r
+    join dim_org_unit o1 on o1.org_unit_id = r.org_unit_id and r.response_date between o1.valid_from and o1.valid_to
+    left join dim_org_unit o2 on o2.org_unit_id = o1.parent_org_unit_id and r.response_date between o2.valid_from and o2.valid_to
+
+facts:
+  # ---------------------------------------------------------------------------------------------- scale and boundaries
+  - id: initial_load_employees
+    description: People employed on 2021-01-01 (one initial_load hire event each)
+    sql: select count(*) from employment_event where event_reason = 'initial_load'
+    expected: 3102
+  - id: active_2021_01
+    description: Active headcount on 2021-01-31
+    sql: select count(*) from employee_snapshot_monthly where snapshot_date = date '2021-01-31' and employment_status = 'active'
+    expected: 3069
+  - id: active_2025_12
+    description: Active headcount on 2025-12-31
+    sql: select count(*) from employee_snapshot_monthly where snapshot_date = date '2025-12-31' and employment_status = 'active'
+    expected: 4462
+  - id: ever_employed
+    description: People ever employed
+    sql: select count(*) from employee
+    expected: 6518
+  - id: repeat_candidates
+    description: Candidates with more than one application
+    sql: select count(*) from (select candidate_id from application group by 1 having count(*) > 1)
+    expected: 19775
+  - id: end_open_reqs
+    description: Requisitions still open at END
+    sql: select count(*) from requisition where closed_date is null
+    expected: 174
+  - id: end_unapproved_reqs
+    description: Open requisitions not yet approved at END
+    sql: select count(*) from requisition where approved_date is null
+    expected: 23
+  - id: end_in_process_applications
+    description: Applications still in process at END
+    sql: select count(*) from application where final_disposition = 'in_process'
+    expected: 802
+  - id: end_offers_starting_after_end
+    description: Accepted offers with a start date after END
+    sql: select count(*) from offer where decision = 'accepted' and start_date > date '2025-12-31'
+    expected: 74
+  - id: end_undecided_offers
+    description: Offers awaiting a decision at END
+    sql: select count(*) from offer where decision is null
+    expected: 26
+
+  # ---------------------------------------------------------------------------------------------- organization
+  - id: org_structure
+    description: Level-3 orgs per division, as of END
+    columns: [division, orgs (id)]
+    sql: |
+      select d.org_unit_name,
+             string_agg(o.org_unit_name || ' ' || cast(o.org_unit_id as varchar), ', ' order by o.org_unit_id)
+      from dim_org_unit d
+      join dim_org_unit o on o.parent_org_unit_id = d.org_unit_id and o.org_level = 3 and o.valid_to = date '9999-12-31'
+      where d.org_level = 2
+      group by d.org_unit_id, d.org_unit_name order by d.org_unit_id
+    expected:
+      - [Consumer, "Mobile 6, Growth 7, Payments 8"]
+      - [Enterprise, "Cloud Sales 9, Solutions 10, Partner 11"]
+      - [Platform, "Infrastructure 12, Data Platform 13, AI Platform 14, Security 15, Applied AI 64"]
+      - [Corporate, "People 16, Finance 17, Legal 18"]
+  - id: team_count
+    description: Teams valid at END
+    sql: select count(*) from dim_org_unit where org_level = 4 and valid_to = date '9999-12-31'
+    expected: 45
+  - id: team_19_parent_2023_03_31
+    description: Parent org of team 19 on 2023-03-31
+    sql: |
+      select p.org_unit_name from dim_org_unit o
+      join dim_org_unit p on p.org_unit_id = o.parent_org_unit_id and date '2023-03-31' between p.valid_from and p.valid_to
+      where o.org_unit_id = 19 and date '2023-03-31' between o.valid_from and o.valid_to
+    expected: Mobile
+  - id: team_19_parent_2023_04_30
+    description: Parent org of team 19 on 2023-04-30
+    sql: |
+      select p.org_unit_name from dim_org_unit o
+      join dim_org_unit p on p.org_unit_id = o.parent_org_unit_id and date '2023-04-30' between p.valid_from and p.valid_to
+      where o.org_unit_id = 19 and date '2023-04-30' between o.valid_from and o.valid_to
+    expected: Growth
+  - id: applied_ai_teams
+    description: Teams under Applied AI from 2024-09-01
+    sql: |
+      select string_agg(t.org_unit_name || ' ' || cast(t.org_unit_id as varchar), ', ' order by t.org_unit_id)
+      from dim_org_unit t join dim_org_unit o on o.org_unit_id = t.parent_org_unit_id
+      where o.org_unit_name = 'Applied AI' and t.valid_from = date '2024-09-01'
+    expected: "Applied ML 49, Evaluation 50"
+  - id: avg_span_2025_12
+    description: Average direct reports per manager on 2025-12-31
+    sql: |
+      select round(avg(n), 1) from (select count(*) n from employee_snapshot_monthly
+                                    where snapshot_date = date '2025-12-31' and manager_employee_id is not null group by manager_employee_id)
+    expected: 9.1
+  - id: max_depth_2025_12
+    description: Most manager hops from the CEO on 2025-12-31
+    sql: |
+      with recursive t(employee_id, depth) as (
+        select employee_id, 0 from employee_snapshot_monthly where snapshot_date = date '2025-12-31' and manager_employee_id is null
+        union all
+        select s.employee_id, t.depth + 1 from employee_snapshot_monthly s
+        join t on s.manager_employee_id = t.employee_id and s.snapshot_date = date '2025-12-31')
+      select max(depth) from t
+    expected: 5
+
+  # ---------------------------------------------------------------------------------------------- headline numbers
+  - id: headline_by_year
+    description: Flows and attrition by year; rates over average month-end active headcount
+    columns: [year, active at year end, hires, rehires, internal moves, voluntary exits, involuntary exits, voluntary %, involuntary %, regretted share of voluntary %]
+    plain: [year]
+    sql: |
+      with hc as (select year(snapshot_date) y, avg(n) avg_hc
+                  from (select snapshot_date, count(*) n from employee_snapshot_monthly where employment_status = 'active' group by 1) group by 1),
+      ye as (select year(snapshot_date) y, count(*) active from employee_snapshot_monthly
+             where employment_status = 'active' and month(snapshot_date) = 12 group by 1),
+      ev as (select year(effective_date) y, count(*) filter (where event_type = 'hire') hires,
+                    count(*) filter (where event_type = 'rehire') rehires,
+                    count(*) filter (where event_type = 'transfer' and event_reason = 'internal_application') internal_moves
+             from employment_event where effective_date >= date '2021-01-01' group by 1),
+      t as (select year(termination_date) y, count(*) filter (where termination_type = 'voluntary') vol,
+                   count(*) filter (where termination_type = 'involuntary') invol, count(*) filter (where regretted_flag) regretted
+            from termination group by 1)
+      select y, active, hires, rehires, internal_moves, vol, invol, round(100.0 * vol / avg_hc, 1), round(100.0 * invol / avg_hc, 1),
+             round(100.0 * regretted / vol, 1)
+      from hc join ye using (y) join ev using (y) join t using (y) order by y
+    expected:
+      - [2021, 3267, 519, 15, 84, 268, 72, 8.6, 2.3, 30.6]
+      - [2022, 3747, 811, 49, 126, 322, 63, 9.2, 1.8, 29.5]
+      - [2023, 3855, 536, 36, 96, 340, 127, 9.0, 3.4, 40.9]
+      - [2024, 4113, 765, 46, 109, 447, 96, 11.3, 2.4, 34.5]
+      - [2025, 4462, 785, 60, 115, 396, 103, 9.2, 2.4, 37.1]
+  - id: voluntary_attrition_2024_pct
+    description: Voluntary attrition 2024, % of average month-end active headcount (layer 2 acceptance)
+    sql: |
+      select round(100.0 * (select count(*) from termination where termination_type = 'voluntary' and year(termination_date) = 2024)
+             / (select avg(n) from (select snapshot_date, count(*) n from employee_snapshot_monthly
+                                   where employment_status = 'active' and year(snapshot_date) = 2024 group by 1)), 1)
+    expected: 11.3
+  - id: regretted_share_2024_pct
+    description: Regretted share of 2024 voluntary exits, % (layer 2 acceptance)
+    sql: |
+      select round(100.0 * count(*) filter (where regretted_flag) / count(*), 1)
+      from termination where termination_type = 'voluntary' and year(termination_date) = 2024
+    expected: 34.5
+
+  # ---------------------------------------------------------------------------------------------- planted signals
+  - id: s1_voluntary_pct_by_division
+    description: "S1: voluntary attrition % by division"
+    columns: [division, "2023", "2024", "2025"]
+    sql: |
+      select d.org_unit_name,
+        round(100.0 * (select count(*) from v_exits_by_division x where x.division_id = d.org_unit_id and x.termination_type = 'voluntary' and year(x.termination_date) = 2023)
+              / (select count(*) / 12.0 from v_active_by_division h where h.division_id = d.org_unit_id and year(h.snapshot_date) = 2023), 1),
+        round(100.0 * (select count(*) from v_exits_by_division x where x.division_id = d.org_unit_id and x.termination_type = 'voluntary' and year(x.termination_date) = 2024)
+              / (select count(*) / 12.0 from v_active_by_division h where h.division_id = d.org_unit_id and year(h.snapshot_date) = 2024), 1),
+        round(100.0 * (select count(*) from v_exits_by_division x where x.division_id = d.org_unit_id and x.termination_type = 'voluntary' and year(x.termination_date) = 2025)
+              / (select count(*) / 12.0 from v_active_by_division h where h.division_id = d.org_unit_id and year(h.snapshot_date) = 2025), 1)
+      from dim_org_unit d where d.org_level = 2 order by d.org_unit_id
+    expected:
+      - [Consumer, 8.6, 11.0, 8.9]
+      - [Enterprise, 10.3, 9.0, 8.5]
+      - [Platform, 7.6, 13.7, 10.2]
+      - [Corporate, 11.3, 9.9, 8.5]
+  - id: s1_compa_by_family
+    description: "S1: average compa-ratio on June 30"
+    columns: [job family, 2023-06-30, 2024-06-30]
+    sql: |
+      select j.job_family,
+             round(avg(c.base_salary / b.mid_salary) filter (where s.snapshot_date = date '2023-06-30'), 2),
+             round(avg(c.base_salary / b.mid_salary) filter (where s.snapshot_date = date '2024-06-30'), 2)
+      from employee_snapshot_monthly s
+      join dim_job j using (job_id)
+      join compensation c on c.employee_id = s.employee_id
+       and c.effective_date = (select max(effective_date) from compensation c2 where c2.employee_id = s.employee_id and c2.effective_date <= s.snapshot_date)
+      join dim_comp_band b on b.job_id = s.job_id and b.location_id = s.location_id and s.snapshot_date between b.valid_from and b.valid_to
+      where s.snapshot_date in (date '2023-06-30', date '2024-06-30') and j.job_family in ('Data', 'Engineering', 'Sales')
+      group by 1 order by 1
+    expected:
+      - [Data, 1.0, 0.91]
+      - [Engineering, 1.0, 0.94]
+      - [Sales, 1.01, 1.01]
+  - id: s1_engagement_by_division
+    description: "S1: average engagement score by division"
+    columns: [division, "2023", "2024"]
+    sql: |
+      select d.org_unit_name,
+             round(avg(r.engagement_score) filter (where r.survey_cycle = '2023'), 2),
+             round(avg(r.engagement_score) filter (where r.survey_cycle = '2024'), 2)
+      from v_engagement_by_division r join dim_org_unit d on d.org_unit_id = r.division_id and d.org_level = 2
+      group by d.org_unit_id, d.org_unit_name order by d.org_unit_id
+    expected:
+      - [Consumer, 3.73, 3.69]
+      - [Enterprise, 3.76, 3.72]
+      - [Platform, 3.73, 3.22]
+      - [Corporate, 3.73, 3.72]
+  - id: s2_bad_manager_id
+    description: "S2: the planted bad manager"
+    sql: select user_id from demo_user where persona = 'planted_bad_manager'
+    plain: [value]
+    expected: 618
+  - id: s2_bad_manager_team
+    description: "S2: the bad manager's team on their last working day"
+    sql: |
+      select o.org_unit_name || ' (' || cast(o.org_unit_id as varchar) || ')' from termination t
+      join dim_org_unit o on o.org_unit_id = t.last_org_unit_id
+      where t.employee_id = (select user_id from demo_user where persona = 'planted_bad_manager')
+    expected: Checkout (27)
+  - id: s2_bad_manager_exit_date
+    description: "S2: when the bad manager was exited (involuntary, performance)"
+    sql: |
+      select termination_date from termination
+      where employee_id = (select user_id from demo_user where persona = 'planted_bad_manager')
+        and termination_type = 'involuntary' and exit_reason = 'performance'
+    expected: 2025-07-15
+  - id: s2_reports_voluntary_rate_pct
+    description: "S2: annualized voluntary exit rate of the bad manager's reports, %"
+    sql: |
+      select cast(round(100.0 * (select count(*) from termination where termination_type = 'voluntary' and last_manager_employee_id = m.id)
+             / (select count(*) / 12.0 from employee_snapshot_monthly where manager_employee_id = m.id and employment_status = 'active')) as bigint)
+      from (select user_id id from demo_user where persona = 'planted_bad_manager') m
+    expected: 65
+  - id: company_voluntary_rate_pct
+    description: Annualized voluntary exit rate, whole company 2021-2025, %
+    sql: |
+      select round(100.0 * (select count(*) from termination where termination_type = 'voluntary')
+             / (select count(*) / 12.0 from employee_snapshot_monthly where employment_status = 'active'), 1)
+    expected: 9.5
+  - id: s2_manager_reason_exits
+    description: "S2: exits under the bad manager citing the manager"
+    sql: |
+      select count(*) from termination
+      where last_manager_employee_id = (select user_id from demo_user where persona = 'planted_bad_manager') and exit_reason = 'manager'
+    expected: 11
+  - id: s2_manager_score
+    description: "S2: the bad manager's average manager_score"
+    sql: |
+      select round(avg(manager_score), 2) from engagement_response
+      where manager_employee_id = (select user_id from demo_user where persona = 'planted_bad_manager')
+    expected: 2.76
+  - id: company_manager_score
+    description: Average manager_score, all responses
+    sql: select round(avg(manager_score), 2) from engagement_response
+    expected: 3.84
+  - id: s3_external_funnel_by_source
+    description: "S3: external applicants, % passing resume review and % accepting offers"
+    columns: [source, passes resume review %, accepts offer %]
+    sql: |
+      select a.source_channel,
+             round(100 * avg((se.outcome = 'advance')::int) filter (where se.stage = 'applied' and se.outcome is not null), 1),
+             round(100 * avg((o.decision = 'accepted')::int) filter (where o.decision is not null), 1)
+      from application a
+      left join application_stage_event se using (application_id)
+      left join offer o using (application_id)
+      where a.candidate_type = 'external' group by 1 order by 1
+    expected:
+      - [agency, 46.3, 58.6]
+      - [campus, 28.2, 70.0]
+      - [inbound, 26.4, 72.5]
+      - [referral, 55.9, 81.3]
+      - [sourced, 42.2, 68.6]
+  - id: s4_bangalore_comp_decline_pct
+    description: "S4: share of Bangalore declines citing comp, %"
+    sql: select round(100 * avg((decline_reason = 'comp')::int), 1) from offer where decision = 'declined' and location_id = 7
+    expected: 56.4
+  - id: s4_other_comp_decline_pct
+    description: "S4: share of declines citing comp outside Bangalore, % (excluding left_company)"
+    sql: |
+      select round(100 * avg((decline_reason = 'comp')::int), 1) from offer
+      where decision = 'declined' and location_id <> 7 and decline_reason <> 'left_company'
+    expected: 34.3
+  - id: s4_london_median_days_to_fill
+    description: "S4: median days from approval to fill, London"
+    sql: select median(date_diff('day', approved_date, closed_date)) from requisition where close_reason = 'filled' and location_id = 6
+    expected: 70
+  - id: s4_other_median_days_to_fill
+    description: "S4: median days from approval to fill, other locations"
+    sql: select median(date_diff('day', approved_date, closed_date)) from requisition where close_reason = 'filled' and location_id <> 6
+    expected: 57
+  - id: s5_exits_by_last_rating
+    description: "S5: exits by last rating"
+    columns: [last rating, voluntary, involuntary]
+    sql: |
+      select last_rating, count(*) filter (where termination_type = 'voluntary'), count(*) filter (where termination_type = 'involuntary')
+      from termination group by 1 order by 1
+    expected:
+      - [1, 47, 96]
+      - [2, 194, 161]
+      - [3, 915, 177]
+      - [4, 433, 24]
+      - [5, 184, 3]
+  - id: s5_involuntary_low_rated_pct
+    description: "S5: share of involuntary exits rated 1-2, %"
+    sql: select cast(round(100.0 * avg((last_rating <= 2)::int)) as bigint) from termination where termination_type = 'involuntary'
+    expected: 56
+  - id: workforce_low_rated_pct
+    description: Share of all ratings that are 1-2, %
+    sql: select cast(round(100.0 * avg((rating <= 2)::int)) as bigint) from performance_rating
+    expected: 13
+  - id: s5_voluntary_high_rated_pct
+    description: "S5: share of voluntary exits rated 4-5, %"
+    sql: select cast(round(100.0 * avg((last_rating >= 4)::int)) as bigint) from termination where termination_type = 'voluntary'
+    expected: 35
+  - id: workforce_high_rated_pct
+    description: Share of all ratings that are 4-5, %
+    sql: select cast(round(100.0 * avg((rating >= 4)::int)) as bigint) from performance_rating
+    expected: 32
+  - id: s6_freeze_cancelled_reqs
+    description: "S6: growth reqs cancelled by the hiring freeze"
+    sql: select count(*) from requisition where close_reason = 'cancelled_hiring_freeze'
+    expected: 124
+  - id: s7_rif_exits
+    description: "S7: employees exited in the reduction in force"
+    sql: select count(*) from termination where exit_reason = 'reduction_in_force'
+    expected: 56
+
+  # ---------------------------------------------------------------------------------------------- personas
+  - id: demo_personas
+    description: Demo personas
+    columns: [persona, user_id, role, scope_org_unit_id, what it is for]
+    plain: [user_id, scope_org_unit_id]
+    sql: select persona, user_id, role, scope_org_unit_id, description from demo_user order by persona
+    expected:
+      - [ceo, 1, executive, 1, "Whole company, aggregated only"]
+      - [executive_platform, 4, executive, 4, "Platform division, aggregated only"]
+      - [former_manager, 22, none, null, "Managed people before 2024, not today"]
+      - [hrbp_ai_platform, 3523, hrbp, 14, "HRBP for AI Platform org subtree"]
+      - [ic_no_access, 28, none, null, "Individual contributor with no access rights"]
+      - [manager_checkout_lead, 617, manager, null, "Lead of Checkout team (S2 team)"]
+      - [manager_small_team, 2906, manager, null, "Line manager with 3-4 reports (suppression tests)"]
+      - [manager_team_19_lead, 25, manager, null, "Lead of the team moved in reorg 1"]
+      - [people_analytics, 453, people_analytics, 1, "Sees everything"]
+      - [planted_bad_manager, 618, none, null, "S2: low-quality line manager in Checkout, exited 2025-07-15"]

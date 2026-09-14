@@ -13,10 +13,15 @@ python3.12 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/pip install -e .
 .venv/bin/python -m people_ai.generate_data   # ~30s, deterministic (SEED 42)
-.venv/bin/pytest                               # 37 data integrity and planted-signal tests
+.venv/bin/python -m people_ai.metadata.render_docs   # regenerate the schema doc from metadata/
+.venv/bin/pytest                               # data integrity, planted signals, metadata vs data
 ```
 
 This writes `data/people.duckdb` and one parquet file per table.
+
+## Metadata is tested, not just written
+
+`metadata/tables.yaml` describes every table and column, and `metadata/facts.yaml` holds every number the docs quote with the SQL behind it. Tests check both against the data, and the schema doc is generated from them. If the data changes and the metadata doesn't, the build fails instead of the docs quietly going stale.
 
 ## What's in the data
 
@@ -60,7 +65,9 @@ Acme Corp, January 2021 to December 2025:
 ```
 src/people_ai/generate_data.py     entry point for layer 1
 src/people_ai/synthetic/           simulation: params, dims, engine, recruiting, export
-tests/                             integrity and planted-signal tests
-docs/                              schema, metric definitions, architecture
+metadata/                          tables.yaml, facts.yaml, doc template (source of truth for meaning)
+src/people_ai/metadata/            load and validate metadata, render docs
+tests/                             integrity, planted-signal and metadata tests
+docs/                              generated schema doc, metric definitions, architecture
 data/                              generated DuckDB + parquet
 ```
