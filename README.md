@@ -27,12 +27,12 @@ This writes `data/people.duckdb` and one parquet file per table.
 
 Acme Corp, January 2021 to December 2025:
 
-- **People:** about 6,500 people ever employed, growing from ~3,100 to ~4,460 active.
-- **Org chart:**
-  - 4 divisions, 14 orgs, 45 teams.
+- **People:** about 6,500 people ever employed, growing from ~3,100 to ~4,430 active.
+- **Leadership hierarchy, no org codes:**
+  - Groups are leaders' trees. `reporting_chain` stores each person's dated chain as `.ceo.vp.director.lead.` plus `org_lvl_1..8` leader aliases, so "everyone under X" is `org_chain like '%.x.%'` wherever X sits.
   - Full management chain: CEO → VP → director → team lead → line manager → IC, with an average span of about 9.
-  - Two reorgs: a team moves between orgs on 2023-04-01, and AI Platform splits into two orgs on 2024-09-01.
-- **Recruiting:** ~4,700 openings, ~215k applications and ~164k interview scorecards. Some candidates apply more than once, and internal applicants and former employees apply too.
+  - Two reorgs: a team lead moves to another director on 2023-04-01, and a new director takes over two teams on 2024-09-01.
+- **Recruiting:** ~4,800 openings, ~212k applications and ~162k interview scorecards. Some candidates apply more than once, and internal applicants and former employees apply too.
 - **Employment history:**
   - An event log of hires, rehires, transfers, promotions, manager changes, leaves and terminations.
   - A monthly snapshot derived from that log.
@@ -43,9 +43,9 @@ Acme Corp, January 2021 to December 2025:
 
 | Area | Tables |
 |---|---|
-| Dimensions | `dim_date`, `dim_org_unit`, `dim_location`, `dim_job`, `dim_comp_band`, `headcount_plan` |
+| Dimensions | `dim_date`, `dim_location`, `dim_job`, `dim_comp_band`, `headcount_plan` |
 | Recruiting (ATS) | `requisition`, `candidate`, `application`, `application_stage_event`, `interview_scorecard`, `offer` |
-| Employees (HRIS) | `employee`, `employment_event`, `employee_snapshot_monthly`, `compensation`, `performance_rating`, `termination`, `engagement_response` |
+| Employees (HRIS) | `employee`, `employment_event`, `reporting_chain`, `employee_snapshot_monthly`, `compensation`, `performance_rating`, `termination`, `engagement_response` |
 | Governance | `user_role`, `demo_user` |
 
 ## Layers

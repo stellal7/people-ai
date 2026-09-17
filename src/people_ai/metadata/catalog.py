@@ -13,7 +13,7 @@ import yaml
 from people_ai.config import REPO_ROOT
 
 METADATA_DIR = REPO_ROOT / "metadata"
-COLUMN_TYPES = {"BIGINT", "DOUBLE", "VARCHAR", "DATE", "BOOLEAN"}
+COLUMN_TYPES = {"BIGINT", "DOUBLE", "VARCHAR", "DATE", "BOOLEAN", "BIGINT[]"}
 
 TABLE_REQUIRED = {"name", "area", "description", "grain", "time", "sensitivity", "columns"}
 TABLE_OPTIONAL = {"primary_key", "unique", "rules"}

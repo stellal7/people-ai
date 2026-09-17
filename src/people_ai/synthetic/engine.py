@@ -56,6 +56,7 @@ class Emp:
     rehire_eligible: bool = False
     last_event: dict | None = None
     last_comp: dict | None = None
+    alias: str = ""                     # unique, never reused; what reports and org chains use
 
 
 class Simulation:
@@ -88,6 +89,7 @@ class Simulation:
         self.roster, self.active_ids = {}, []    # refreshed monthly, always re-check status before use
         self.former_pool = []                    # (termination_date, employee_id) in date order
         self.plan, self.plan_bias, self.year_start_hc = {}, {}, {}
+        self.aliases = set()
 
         self.events, self.comp, self.ratings, self.terminations = [], [], [], []
         self.engagement, self.roles = [], []
@@ -122,7 +124,7 @@ class Simulation:
             when, _, _, fn, args = heapq.heappop(self.queue)
             fn(when, *args)
         for (user, role, scope), (start, scope_type) in sorted(self.open_roles.items(), key=lambda kv: kv[1][0]):
-            self.roles.append(dict(user_id=user, role=role, scope_type=scope_type, scope_org_unit_id=scope,
+            self.roles.append(dict(user_id=user, role=role, scope_type=scope_type, scope_leader_employee_id=scope,
                                    valid_from=start, valid_to=P.OPEN_ENDED))
         self.open_roles.clear()
         return self
@@ -170,7 +172,7 @@ class Simulation:
         if key in self.open_roles:
             start, scope_type = self.open_roles.pop(key)
             if when - DAY >= start:
-                self.roles.append(dict(user_id=user, role=role, scope_type=scope_type, scope_org_unit_id=scope,
+                self.roles.append(dict(user_id=user, role=role, scope_type=scope_type, scope_leader_employee_id=scope,
                                        valid_from=start, valid_to=when - DAY))
 
     def close_all_roles(self, e, when):
@@ -178,22 +180,27 @@ class Simulation:
             self.role_close(user, role, scope, when)
 
     def hrbp_rebalance(self, when):
+        """One HRBP per director. The grant is scoped to the director as a person, so it moves when the director changes."""
         pool = [e for e in self.emp.values() if e.org_unit_id == self.hrbp_team and e.status != "terminated"
                 and e.position == "ic" and e.level >= 4]
         pool_ids = {e.employee_id for e in pool}
-        load = Counter(v for v in self.hrbp_of.values() if v in pool_ids)
+        load = Counter(h for h, _ in self.hrbp_of.values() if h in pool_ids)
         for org in self.org.orgs_on(when):
-            cur = self.hrbp_of.get(org)
-            if cur in pool_ids:
+            leader = self.org_head_of.get(org)
+            cur_hrbp, cur_leader = self.hrbp_of.get(org, (None, None))
+            if cur_hrbp in pool_ids and cur_leader == leader:
                 continue
-            if cur is not None:
-                self.role_close(cur, "hrbp", org, when)
-                self.hrbp_of.pop(org)
-            if pool:
-                new = min(pool, key=lambda x: (load[x.employee_id], -x.level, x.employee_id))
-                self.hrbp_of[org] = new.employee_id
-                load[new.employee_id] += 1
-                self.role_open(new.employee_id, "hrbp", org, "org_subtree", when)
+            if cur_hrbp is not None:
+                self.role_close(cur_hrbp, "hrbp", cur_leader, when)
+                del self.hrbp_of[org]
+                if cur_hrbp in pool_ids:
+                    load[cur_hrbp] -= 1
+            if leader is None or not pool:
+                continue
+            hrbp = cur_hrbp if cur_hrbp in pool_ids else min(pool, key=lambda x: (load[x.employee_id], -x.level, x.employee_id)).employee_id
+            self.hrbp_of[org] = (hrbp, leader)
+            load[hrbp] += 1
+            self.role_open(hrbp, "hrbp", leader, "tree", when)
 
     # ------------------------------------------------------------------ reporting lines and positions
     def set_manager(self, e, mgr_id, when, record=True, reason=None):
@@ -203,24 +210,24 @@ class Simulation:
             s = self.reports[e.manager_id]
             s.discard(e.employee_id)
             if not s:
-                self.role_close(e.manager_id, "manager", None, when)
+                self.role_close(e.manager_id, "manager", e.manager_id, when)
         e.manager_id = mgr_id
         if mgr_id is not None:
             s = self.reports.setdefault(mgr_id, set())
             if not s:
-                self.role_open(mgr_id, "manager", None, "reporting_tree", when)
+                self.role_open(mgr_id, "manager", mgr_id, "tree", when)
             s.add(e.employee_id)
         if record:
             self.record(e, "manager_change", when, reason)
 
     def _set_team(self, e, unit, when):
         if e.org_unit_id == self.pa_team and unit != self.pa_team:
-            self.role_close(e.employee_id, "people_analytics", self.org.company_id, when)
+            self.role_close(e.employee_id, "people_analytics", None, when)
         if unit != e.org_unit_id:
             e.team_since = when
         e.org_unit_id = unit
         if unit == self.pa_team and e.status != "terminated":
-            self.role_open(e.employee_id, "people_analytics", self.org.company_id, "all", when)
+            self.role_open(e.employee_id, "people_analytics", None, "all", when)
 
     def _clear_position(self, e, when):
         pos, unit, eid = e.position, e.org_unit_id, e.employee_id
@@ -232,7 +239,7 @@ class Simulation:
             del self.org_head_of[unit]
         elif pos == "div_head" and self.div_head_of.get(unit) == eid:
             del self.div_head_of[unit]
-            self.role_close(eid, "executive", unit, when)
+            self.role_close(eid, "executive", eid, when)
         e.position = "ic"
 
     def _set_position(self, e, pos, unit, when):
@@ -247,10 +254,10 @@ class Simulation:
             self.org_head_of[unit] = eid
         elif pos == "div_head":
             self.div_head_of[unit] = eid
-            self.role_open(eid, "executive", unit, "aggregate_subtree", when)
+            self.role_open(eid, "executive", eid, "tree_aggregate", when)
         elif pos == "ceo":
             self.ceo_id = eid
-            self.role_open(eid, "executive", unit, "aggregate_subtree", when)
+            self.role_open(eid, "executive", eid, "tree_aggregate", when)
 
     def manager_for_position(self, pos, unit, when):
         """Who a position reports to, walking up past vacancies."""
@@ -311,6 +318,9 @@ class Simulation:
             self._refill(old_pos, old_unit, old_reports, when, p.employee_id)
         self.record(p, "promotion" if leveled_up else "job_change", when, reason)
         self.add_comp(p, when, "promotion" if leveled_up else "job_change")
+        if pos == "org_head":                  # plan and HRBP grant follow the new director
+            self.plan_headcount(when, orgs=[unit])
+            self.hrbp_rebalance(when)
 
     def make_line_manager(self, team, when, exclude_id):
         cands = [self.emp[i] for i in self.roster.get(team, ())]
@@ -387,6 +397,7 @@ class Simulation:
         job_id = self.job_lookup[(family, track, level)]
         e = Emp(eid, first or self.rng.choice(self.first_names), last or self.rng.choice(self.last_names),
                 hire_date, hire_date, unit, family, track, level, job_id, loc)
+        e.alias = self.make_alias(e.first_name, e.last_name)
         if salary is None:
             lo, _, hi = self.bands.band(job_id, loc, max(hire_date, P.START))
             salary = lo + min(max(self.rng.normalvariate(0.45, 0.15), 0.05), 0.95) * (hi - lo)
@@ -398,8 +409,18 @@ class Simulation:
         self.emp[eid] = e
         return e
 
+    def make_alias(self, first, last):
+        """First initial + up to 7 letters of the last name, numbered on collision. Never reused."""
+        base = (email_slug(first)[:1] + email_slug(last)[:7]) or "emp"
+        alias, n = base, 1
+        while alias in self.aliases:
+            n += 1
+            alias = f"{base}{n}"
+        self.aliases.add(alias)
+        return alias
+
     def work_email(self, e):
-        return f"{email_slug(e.first_name)}.{email_slug(e.last_name)}.{e.employee_id}@acme.example"
+        return f"{e.alias}@acme.example"
 
     def division_of(self, unit, when):
         return self.org.ancestor_at_level(unit, 2, when) if self.org.level(unit) >= 2 else None
@@ -534,7 +555,8 @@ class Simulation:
 
     def plan_attrition(self, when, end):
         for e in list(self.emp.values()):
-            if e.status == "terminated" or e.position == "ceo" or e.pending_until or e.planted:
+            # the CEO and VPs don't leave, so level-2 history stays with one leader (there are no org labels)
+            if e.status == "terminated" or e.position in ("ceo", "div_head") or e.pending_until or e.planted:
                 continue
             v, i = self.hazards(e, when)
             r = self.rng.random()
@@ -577,7 +599,7 @@ class Simulation:
         self.terminations.append(dict(
             employee_id=e.employee_id, termination_date=when, termination_type=ttype, exit_reason=reason,
             regretted_flag=regretted, rehire_eligible=ttype == "voluntary" and e.rating >= 3,
-            last_org_unit_id=e.org_unit_id, last_job_id=e.job_id, last_job_level=e.level,
+            last_job_id=e.job_id, last_job_level=e.level,
             last_manager_employee_id=e.manager_id, last_rating=e.rating, exit_interview_text=None))
         reports = [self.emp[r] for r in self.reports.get(e.employee_id, ())]
         old_pos, old_unit = e.position, e.org_unit_id
@@ -586,7 +608,7 @@ class Simulation:
             self.set_manager(e, None, when, record=False)
         self._refill(old_pos, old_unit, reports, when, e.employee_id)
         self.close_all_roles(e, when)
-        if old_unit == self.hrbp_team:
+        if old_unit == self.hrbp_team or old_pos == "org_head":
             self.hrbp_rebalance(when)
         e.rehire_eligible = ttype == "voluntary" and e.rating >= 3
         if e.rehire_eligible:
@@ -754,18 +776,24 @@ class Simulation:
             sentiment = None if theme == "none" else "positive" if theme.endswith("_positive") else "negative"
             self.engagement.append(dict(
                 response_id=len(self.engagement) + 1, survey_cycle=cycle, response_date=when, employee_id=eid,
-                org_unit_id=e.org_unit_id, manager_employee_id=e.manager_id, engagement_score=engagement,
+                manager_employee_id=e.manager_id, engagement_score=engagement,
                 manager_score=manager_score, growth_score=growth, comment_theme=theme, comment_sentiment=sentiment,
                 comment_text=None))
 
-    def plan_headcount(self, when):
-        """Headcount plan per level-3 org for the rest of the year, re-based on Jan 1 and on reorg dates."""
+    def plan_headcount(self, when, orgs=None):
+        """
+        Headcount plan for each director's tree for the rest of the year. Set on Jan 1, re-based on reorg dates,
+        and handed to a new director when one takes over. Exported keyed by the director, not the org.
+        """
         counts = Counter()
         for e in self.emp.values():
             if e.status == "active" and self.org.level(e.org_unit_id) >= 3:
                 counts[self.org.ancestor_at_level(e.org_unit_id, 3, when)] += 1
         year = when.year
-        for o in self.org.orgs_on(when):
+        for o in (orgs or self.org.orgs_on(when)):
+            leader = self.org_head_of.get(o)
+            if leader is None:
+                continue
             w = P.ORG_GROWTH_WEIGHT.get(self.org.name(o), 1.0) if year >= 2023 else 1.0
             bias = self.plan_bias.setdefault((o, year), self.rng.normalvariate(1.05, 0.25))
             for q in (1, 2, 3, 4):
@@ -773,7 +801,7 @@ class Simulation:
                 if qe < when:
                     continue
                 planned = counts[o] * (1 + P.GROWTH_BY_YEAR[year] * w * bias) ** ((qe - when).days / 365)
-                self.plan[(o, qe)] = dict(org_unit_id=o, quarter_end=qe, fiscal_year=year, fiscal_quarter=q,
+                self.plan[(o, qe)] = dict(leader_employee_id=leader, quarter_end=qe, fiscal_year=year, fiscal_quarter=q,
                                           planned_headcount=round(planned), plan_version_date=when)
 
     # ------------------------------------------------------------------ planted one-off events
@@ -811,7 +839,7 @@ class Simulation:
 
     # ------------------------------------------------------------------ outputs
     def employee_rows(self):
-        return [dict(employee_id=e.employee_id, first_name=e.first_name, last_name=e.last_name,
+        return [dict(employee_id=e.employee_id, alias=e.alias, first_name=e.first_name, last_name=e.last_name,
                      legal_name=f"{e.first_name} {e.last_name}", work_email=self.work_email(e),
                      original_hire_date=e.original_hire_date, most_recent_hire_date=e.most_recent_hire_date,
                      is_rehire=e.is_rehire)
@@ -825,22 +853,24 @@ class Simulation:
 
         def add(persona, uid, role, scope, description):
             if uid is not None:
-                rows.append(dict(persona=persona, user_id=uid, role=role, scope_org_unit_id=scope,
+                rows.append(dict(persona=persona, user_id=uid, role=role, scope_leader_employee_id=scope,
                                  description=description))
 
-        pa = sorted(u for (u, r, _) in self.open_roles if r == "people_analytics")
-        pa = pa or sorted(r["user_id"] for r in self.roles if r["role"] == "people_analytics" and r["valid_to"] == P.OPEN_ENDED)
-        add("people_analytics", pa[0] if pa else None, "people_analytics", self.org.company_id, "Sees everything")
-        ai = name["AI Platform"]
-        add("hrbp_ai_platform", self.hrbp_of.get(ai), "hrbp", ai, "HRBP for AI Platform org subtree")
-        platform = name["Platform"]
-        add("executive_platform", self.div_head_of.get(platform), "executive", platform, "Platform division, aggregated only")
-        add("ceo", self.ceo_id, "executive", self.org.company_id, "Whole company, aggregated only")
-        add("manager_checkout_lead", self.lead_of.get(name["Checkout"]), "manager", None, "Lead of Checkout team (S2 team)")
-        add("manager_team_19_lead", self.lead_of.get(name[P.REORG_MOVE["team"]]), "manager", None, "Lead of the team moved in reorg 1")
+        pa = sorted(r["user_id"] for r in self.roles if r["role"] == "people_analytics" and r["valid_to"] == P.OPEN_ENDED)
+        add("people_analytics", pa[0] if pa else None, "people_analytics", None, "Sees everything")
+        hrbp, director = self.hrbp_of.get(name["AI Platform"], (None, None))
+        add("hrbp_ai_platform", hrbp, "hrbp", director, "HRBP for the AI Platform director's tree")
+        vp = self.div_head_of.get(name["Platform"])
+        add("executive_platform", vp, "executive", vp, "Platform VP: own tree, aggregated only")
+        add("ceo", self.ceo_id, "executive", self.ceo_id, "Whole company, aggregated only")
+        checkout = self.lead_of.get(name["Checkout"])
+        add("manager_checkout_lead", checkout, "manager", checkout, "Lead of the Checkout team (S2 team)")
+        lead19 = self.lead_of.get(name[P.REORG_MOVE["team"]])
+        add("manager_team_19_lead", lead19, "manager", lead19, "Lead of the team moved in reorg 1")
         small = sorted(m for t, ms in self.lines.items() for m in ms
                        if emp[m].status == "active" and len(self.reports.get(m, ())) in (3, 4))
-        add("manager_small_team", small[0] if small else None, "manager", None, "Line manager with 3-4 reports (suppression tests)")
+        add("manager_small_team", small[0] if small else None, "manager", small[0] if small else None,
+            "Line manager with 3-4 reports (suppression tests)")
         still_managing = {r["user_id"] for r in self.roles if r["role"] == "manager" and r["valid_to"] == P.OPEN_ENDED}
         former = sorted(r["user_id"] for r in self.roles if r["role"] == "manager" and r["valid_to"] < date(2024, 1, 1)
                         and emp[r["user_id"]].status == "active" and r["user_id"] not in still_managing)

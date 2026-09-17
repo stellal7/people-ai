@@ -12,19 +12,20 @@ The data model for layer 1. It covers Acme Corp, a fictional company, from **202
 
 Row counts and value counts in section 3 are read from the data when the doc is rendered. Don't edit this file by hand: change `metadata/` and run `python -m people_ai.metadata.render_docs`.
 
-No real person is represented. Names come from Faker. Emails use `example.com` for candidates and `acme.example` for employees, and phone numbers use the fictional 555-01XX range.
+No real person is represented. Names come from Faker. Emails use `example.com` for candidates and `alias@acme.example` for employees, and phone numbers use the fictional 555-01XX range.
 
 ## 1. Conventions that matter for every query
 
 | Rule | What it means in SQL |
 |---|---|
-| **Events are truth** | `employment_event` is the source. An employee's state on date D is their latest event with `effective_date <= D`. `employee_snapshot_monthly` is only a month-end copy of that; tests prove they match row for row. |
-| **Effective dating** | `valid_from` and `valid_to` are inclusive. An open-ended row has `valid_to = 9999-12-31`. Join on id **and** date, e.g. `on o.org_unit_id = e.org_unit_id and D between o.valid_from and o.valid_to`. |
-| **Effective date = first day of the new state** | A `termination` dated D means the person is not employed on D; their last working day is D-1. Role grants end on D-1 too. |
+| **Reports anchor on leaders, not org codes** | There are no org units in the data. "Platform" means everyone whose reporting chain contains the Platform VP on the date: `org_chain like '%.alias.%'` or `list_contains(chain_ids, id)`. When a team moves, its leader's manager changes and every chain below changes with it. |
+| **Events are truth** | `employment_event` is the source. An employee's state on date D is their latest event with `effective_date <= D`. `reporting_chain` and `employee_snapshot_monthly` are derived from events; tests prove they match. |
+| **Effective dating** | `valid_from` and `valid_to` are inclusive; an open-ended row has `valid_to = 9999-12-31`. Join on id **and** date: `D between valid_from and valid_to`. Used by `reporting_chain`, `user_role` and `dim_comp_band`. |
+| **Effective date = first day of the new state** | A `termination` dated D means the person is not employed on D; their last working day is D-1. Attribute an exit to leaders with the chain valid on D-1. Role grants end on D-1 too. |
 | **One event per employee per day** | Same-day changes merge into one row holding the end-of-day state. The more important type wins: termination > hire/rehire > transfer > promotion > job_change/leave > manager_change. |
-| **Rehires keep their `employee_id`** | A boomerang's history is one timeline: hire … termination … rehire. |
-| **Nothing exists after END** | A person with an accepted offer is **not** an employee until their start date. At END there are 174 open reqs (23 not yet approved), 802 applications in process, 74 accepted offers starting in 2026, and 26 offers awaiting a decision. Only planned dates (`target_start_date`, `offer.start_date`) may fall after END. |
-| **History before 2021 is collapsed** | The 3,102 people employed on 2021-01-01 have one `hire` event (`event_reason = 'initial_load'`) at their real hire date, carrying their state as of 2021-01-01. Their comp row is dated the same way, and their manager grants start on 2021-01-01. Only analyze dynamics from 2021 on. |
+| **Rehires keep their `employee_id` and alias** | A boomerang's history is one timeline: hire … termination … rehire. |
+| **Nothing exists after END** | A person with an accepted offer is **not** an employee until their start date. At END there are 220 open reqs (24 not yet approved), 1,161 applications in process, 74 accepted offers starting in 2026, and 19 offers awaiting a decision. Only planned dates (`target_start_date`, `offer.start_date`) may fall after END. |
+| **History before 2021 is collapsed** | The 3,102 people employed on 2021-01-01 have one `hire` event (`event_reason = 'initial_load'`) at their real hire date, carrying their state as of 2021-01-01. Their comp row is dated the same way, and their reporting chains and manager grants start on 2021-01-01. Only analyze dynamics from 2021 on. |
 | **`application.candidate_type` is the truth about who applied** | `external`, `internal` (current employee) or `boomerang` (former employee). A candidate row can carry both `internal_employee_id` and `former_employee_id` if the same person applied both ways over time. |
 
 ## 2. Entity map
@@ -33,11 +34,9 @@ Each line connects a referenced table (left) to a table that points at it (right
 
 ```mermaid
 erDiagram
-  dim_org_unit ||--o{ dim_org_unit : "parent_org_unit_id"
   dim_job ||--o{ dim_comp_band : "job_id"
   dim_location ||--o{ dim_comp_band : "location_id"
-  dim_org_unit ||--o{ headcount_plan : "org_unit_id"
-  dim_org_unit ||--o{ requisition : "org_unit_id"
+  employee ||--o{ headcount_plan : "leader_employee_id"
   dim_job ||--o{ requisition : "job_id"
   dim_location ||--o{ requisition : "location_id"
   employee ||--o{ requisition : "hiring_manager_employee_id, recruiter_employee_id, backfill_for_employee_id"
@@ -52,25 +51,20 @@ erDiagram
   dim_job ||--o{ offer : "job_id"
   dim_location ||--o{ offer : "location_id"
   employee ||--o{ employment_event : "employee_id, manager_employee_id"
-  dim_org_unit ||--o{ employment_event : "org_unit_id"
   dim_job ||--o{ employment_event : "job_id"
   dim_location ||--o{ employment_event : "location_id"
   application ||--o{ employment_event : "application_id"
-  employee ||--o{ employee_snapshot_monthly : "employee_id, manager_employee_id"
-  dim_org_unit ||--o{ employee_snapshot_monthly : "org_unit_id"
+  employee ||--o{ reporting_chain : "employee_id, alias, manager_employee_id, manager_alias, org_lvl_1, org_lvl_2, org_lvl_3, org_lvl_4, org_lvl_5, org_lvl_6, org_lvl_7, org_lvl_8"
+  employee ||--o{ employee_snapshot_monthly : "employee_id, manager_employee_id, manager_alias, org_lvl_1, org_lvl_2, org_lvl_3, org_lvl_4, org_lvl_5, org_lvl_6, org_lvl_7, org_lvl_8"
   dim_job ||--o{ employee_snapshot_monthly : "job_id"
   dim_location ||--o{ employee_snapshot_monthly : "location_id"
   employee ||--o{ compensation : "employee_id"
   employee ||--o{ performance_rating : "employee_id, manager_employee_id_at_cycle"
   employee ||--o{ termination : "employee_id, last_manager_employee_id"
-  dim_org_unit ||--o{ termination : "last_org_unit_id"
   dim_job ||--o{ termination : "last_job_id"
   employee ||--o{ engagement_response : "employee_id, manager_employee_id"
-  dim_org_unit ||--o{ engagement_response : "org_unit_id"
-  employee ||--o{ user_role : "user_id"
-  dim_org_unit ||--o{ user_role : "scope_org_unit_id"
-  employee ||--o{ demo_user : "user_id"
-  dim_org_unit ||--o{ demo_user : "scope_org_unit_id"
+  employee ||--o{ user_role : "user_id, scope_leader_employee_id"
+  employee ||--o{ demo_user : "user_id, scope_leader_employee_id"
 ```
 
 ## 3. Tables
@@ -86,9 +80,9 @@ Time kinds used below:
 
 Sensitivity levels, the data classes layer 3 authorizes:
 
-- **reference:** Non-personal reference data: calendar, jobs, locations, pay bands, org structure, plans.
-- **people:** Identifies employees or describes their employment history.
-- **compensation:** Individual pay. Aggregates for everyone in scope; individual rows only for a manager's direct reports and an HRBP's subtree.
+- **reference:** Non-personal reference data: calendar, jobs, locations, pay bands, plans.
+- **people:** Identifies employees or describes their employment history and reporting lines.
+- **compensation:** Individual pay. Aggregates for everyone in scope; individual rows only for a manager's direct reports and an HRBP's tree.
 - **performance:** Individual ratings. Same rule as compensation.
 - **engagement:** Survey answers. Never shown individually; aggregates suppressed below 5 respondents.
 - **recruiting:** Requisitions, applications, interview outcomes and offers.
@@ -117,28 +111,6 @@ Calendar. Fiscal year and quarter equal the calendar year and quarter.
 | `is_month_end` | BOOLEAN | Last day of the month. |
 | `is_quarter_end` | BOOLEAN | Last day of a quarter. |
 | `is_year_end` | BOOLEAN | December 31. |
-
-#### `dim_org_unit`
-
-The org tree, effective dated. A unit keeps its id across versions; only its parent changes.
-
-- **Grain:** one row per org unit version (67 rows)
-- **Keys:** primary key `org_unit_id`, `valid_from`
-- **Time:** effective_dated. Versions with valid_from and valid_to (inclusive). Join on the id and the date.
-- **Sensitivity:** reference
-
-Rules:
-- Always join on `org_unit_id` and the date: `D between valid_from and valid_to`. Joining on id alone double counts units that moved.
-- Reorg 1 on 2023-04-01 moves team 19 (App Experience) from Mobile to Growth. Reorg 2 on 2024-09-01 creates Applied AI (64) and moves teams 49 and 50 under it.
-
-| column | type | meaning |
-|---|---|---|
-| `org_unit_id` | BIGINT | Stable id of the unit. |
-| `org_unit_name` | VARCHAR | Unique name, e.g. Checkout. |
-| `parent_org_unit_id` | BIGINT | Parent during this version. NULL means the company itself (top of the tree). References `dim_org_unit.org_unit_id`. |
-| `org_level` | BIGINT | 1 company, 2 division, 3 org, 4 team. Range 1 to 4. |
-| `valid_from` | DATE | First day this version applies. Original units start 2014-01-01. Range 2014-01-01 to 2025-12-31. |
-| `valid_to` | DATE | Last day this version applies; 9999-12-31 while current. Range 2014-01-01 to 9999-12-31. |
 
 #### `dim_location`
 
@@ -204,62 +176,62 @@ Rules:
 
 #### `headcount_plan`
 
-Planned headcount per level-3 org and quarter.
+Planned headcount for each director's tree, per quarter.
 
-- **Grain:** one row per org and quarter end (266 rows)
-- **Keys:** primary key `org_unit_id`, `quarter_end`
+- **Grain:** one row per director per quarter end (266 rows)
+- **Keys:** primary key `leader_employee_id`, `quarter_end`
 - **Time:** periodic. One row per cycle (survey, rating cycle, plan quarter).
 - **Sensitivity:** reference
 
 Rules:
-- Set on January 1 and re-set on each reorg date for the remaining quarters of that year.
-- Compare with actual headcount rolled up using the org tree valid on quarter_end.
+- Set on January 1, re-set on reorg dates, and handed to a new director for the remaining quarters when one takes over.
+- Compare with actual active headcount whose reporting chain contains the director on quarter_end (director included).
 
 | column | type | meaning |
 |---|---|---|
-| `org_unit_id` | BIGINT | Level-3 org. References `dim_org_unit.org_unit_id`. |
+| `leader_employee_id` | BIGINT | The director who owns the plan. References `employee.employee_id`. |
 | `quarter_end` | DATE | Last day of the quarter. Range 2021-03-31 to 2025-12-31. |
 | `fiscal_year` | BIGINT | Plan year. Range 2021 to 2025. |
 | `fiscal_quarter` | BIGINT | Plan quarter. Range 1 to 4. |
 | `planned_headcount` | BIGINT | Planned active headcount at quarter end. |
-| `plan_version_date` | DATE | When this plan value was set: January 1 or a reorg date. Range 2021-01-01 to 2025-12-31. |
+| `plan_version_date` | DATE | When this plan value was set. Range 2021-01-01 to 2025-12-31. |
 
 ### Recruiting (ATS)
 
 #### `requisition`
 
-An approved opening to hire one person into a team.
+An approved opening to hire one person.
 
-- **Grain:** one row per opening (4,738 rows)
+- **Grain:** one row per opening (4,773 rows)
 - **Keys:** primary key `req_id`
 - **Time:** lifecycle. One row per record, with milestone dates filled in as it progresses.
 - **Sensitivity:** recruiting
 
 Rules:
+- Attribute a req to a leader through the hiring manager's reporting_chain on opened_date.
 - Time to fill = days from approved_date to closed_date, for close_reason = 'filled' only.
 - Every backfill points at a termination dated on or before opened_date.
 
 | column | type | meaning |
 |---|---|---|
 | `req_id` | BIGINT | Requisition id. |
-| `org_unit_id` | BIGINT | Hiring team (level 4). References `dim_org_unit.org_unit_id`. |
 | `job_id` | BIGINT | The role. Always an IC job. References `dim_job.job_id`. |
 | `location_id` | BIGINT | Where the role sits. References `dim_location.location_id`. |
-| `hiring_manager_employee_id` | BIGINT | Hiring manager when the req opened. References `employee.employee_id`. |
-| `recruiter_employee_id` | BIGINT | Recruiter from the Talent Acquisition team. References `employee.employee_id`. |
-| `headcount_type` | VARCHAR | new = growth, backfill = replaces someone who left. Values: `new` 2,907 · `backfill` 1,831. |
+| `hiring_manager_employee_id` | BIGINT | Hiring manager when the req opened; the new hire usually reports to them. References `employee.employee_id`. |
+| `recruiter_employee_id` | BIGINT | Recruiter. References `employee.employee_id`. |
+| `headcount_type` | VARCHAR | new = growth, backfill = replaces someone who left. Values: `new` 2,908 · `backfill` 1,865. |
 | `backfill_for_employee_id` | BIGINT | The terminated employee being replaced. NULL means a growth req (headcount_type = new). References `employee.employee_id`. |
 | `opened_date` | DATE | Req opened. Range 2021-01-01 to 2025-12-31. |
 | `approved_date` | DATE | Approved; sourcing starts this day. NULL means opened in the last days of 2025 and not yet approved at END. Range 2021-01-01 to 2025-12-31. |
 | `target_start_date` | DATE | Planned start date. A plan, so it may fall after END. Range 2021-01-01 to 2026-12-31. |
 | `closed_date` | DATE | Closed: the day an offer was accepted, or the day it was cancelled. NULL means still open at END. Range 2021-01-01 to 2025-12-31. |
-| `close_reason` | VARCHAR | cancelled_no_hire = three sourcing rounds without a hire. NULL means still open at END. Values: `filled` 4,226 · `cancelled_no_hire` 113 · `cancelled_business_change` 101 · `cancelled_hiring_freeze` 124. |
+| `close_reason` | VARCHAR | cancelled_no_hire = three sourcing rounds without a hire. NULL means still open at END. Values: `filled` 4,194 · `cancelled_no_hire` 111 · `cancelled_business_change` 108 · `cancelled_hiring_freeze` 140. |
 
 #### `candidate`
 
 A person in the recruiting system. The same candidate can apply to several reqs.
 
-- **Grain:** one row per person (187,360 rows)
+- **Grain:** one row per person (184,982 rows)
 - **Keys:** primary key `candidate_id`
 - **Time:** static. No time dimension, or the row describes something that never changes.
 - **Sensitivity:** recruiting
@@ -269,12 +241,12 @@ A person in the recruiting system. The same candidate can apply to several reqs.
 | `candidate_id` | BIGINT | Candidate id. |
 | `first_name` | VARCHAR | Fake first name. Sensitivity: **candidate_pii**. |
 | `last_name` | VARCHAR | Fake last name. Sensitivity: **candidate_pii**. |
-| `email` | VARCHAR | Fake email. Internal applicants keep their work email. Format `[a-z]*\.[a-z]*\.[0-9]+@(example\.com\|acme\.example)`. Sensitivity: **candidate_pii**. |
+| `email` | VARCHAR | Fake email. Internal applicants keep their work email. Format `[a-z]*\.[a-z]*\.[0-9]+@example\.com\|[a-z]+[0-9]*@acme\.example`. Sensitivity: **candidate_pii**. |
 | `phone` | VARCHAR | Fictional 555-01XX number. Format `\+1-[0-9]{3}-555-01[0-9]{2}`. Sensitivity: **candidate_pii**. |
 | `location_id` | BIGINT | Where the candidate lives. References `dim_location.location_id`. |
 | `years_experience` | BIGINT | Years of experience. Range 0 to 20. |
 | `current_company` | VARCHAR | Fake current employer; Acme Corp for internal applicants. |
-| `highest_degree` | VARCHAR | Highest education listed. Values: `Bachelor's` 102,955 · `Master's` 56,439 · `PhD` 9,364 · `Bootcamp / certificate` 9,278 · `None listed` 9,324. |
+| `highest_degree` | VARCHAR | Highest education listed. Values: `Bachelor's` 101,463 · `Master's` 55,757 · `PhD` 9,303 · `Bootcamp / certificate` 9,179 · `None listed` 9,280. |
 | `skills` | VARCHAR | Semicolon-separated skills. Ground truth for resume_text. |
 | `internal_employee_id` | BIGINT | Employee id when the candidate applied as a current employee. NULL means never applied while employed at Acme. References `employee.employee_id`. |
 | `former_employee_id` | BIGINT | Employee id when the candidate applied as a former employee (boomerang). NULL means never applied as a former employee. References `employee.employee_id`. |
@@ -285,34 +257,34 @@ A person in the recruiting system. The same candidate can apply to several reqs.
 
 One candidate applying to one req.
 
-- **Grain:** one row per candidate per req (215,061 rows)
+- **Grain:** one row per candidate per req (211,722 rows)
 - **Keys:** primary key `application_id`
 - **Time:** lifecycle. One row per record, with milestone dates filled in as it progresses.
 - **Sensitivity:** recruiting
 
 Rules:
 - candidate_type is the truth about who applied; candidate.internal_employee_id and former_employee_id only say the person applied that way at some point.
-- For channel analysis of external sourcing, filter candidate_type = 'external'; internal applicants convert far better.
+- Channel comparisons of external sourcing should break down or filter by candidate_type; internal applicants convert far better.
 
 | column | type | meaning |
 |---|---|---|
 | `application_id` | BIGINT | Application id. |
 | `candidate_id` | BIGINT | Who applied. References `candidate.candidate_id`. |
 | `req_id` | BIGINT | What they applied to. References `requisition.req_id`. |
-| `candidate_type` | VARCHAR | internal = current employee, boomerang = former employee. Values: `external` 204,509 · `internal` 7,550 · `boomerang` 3,002. |
-| `source_channel` | VARCHAR | How the application arrived; internal_mobility for internal applicants. Values: `inbound` 93,281 · `referral` 37,951 · `sourced` 45,388 · `agency` 10,113 · `campus` 20,778 · `internal_mobility` 7,550. |
+| `candidate_type` | VARCHAR | internal = current employee, boomerang = former employee. Values: `external` 201,389 · `internal` 7,394 · `boomerang` 2,939. |
+| `source_channel` | VARCHAR | How the application arrived; internal_mobility for internal applicants. Values: `inbound` 91,970 · `referral` 37,442 · `sourced` 44,891 · `agency` 10,023 · `campus` 20,002 · `internal_mobility` 7,394. |
 | `applied_date` | DATE | Applied; on or after the req's approved_date. Range 2021-01-01 to 2025-12-31. |
-| `current_stage` | VARCHAR | Last stage entered. Values: `applied` 134,047 · `recruiter_screen` 40,523 · `hiring_manager_screen` 21,531 · `onsite` 13,395 · `offer` 5,565. |
+| `current_stage` | VARCHAR | Last stage entered. Values: `applied` 132,250 · `recruiter_screen` 39,787 · `hiring_manager_screen` 21,089 · `onsite` 13,050 · `offer` 5,546. |
 | `current_stage_date` | DATE | When current_stage was entered. Range 2021-01-01 to 2025-12-31. |
-| `final_disposition` | VARCHAR | Outcome; in_process only for applications still open at END. Values: `hired` 4,226 · `rejected` 195,136 · `withdrawn` 14,897 · `in_process` 802. |
+| `final_disposition` | VARCHAR | Outcome; in_process only for applications still open at END. Values: `hired` 4,194 · `rejected` 191,632 · `withdrawn` 14,735 · `in_process` 1,161. |
 | `disposition_date` | DATE | When the outcome was decided. NULL means still in process at END. Range 2021-01-01 to 2025-12-31. |
-| `disposition_reason` | VARCHAR | Why it ended without a hire. NULL means hired, or still in process. Values: `rejected_at_applied` 119,693 · `rejected_at_recruiter_screen` 32,499 · `rejected_at_hiring_manager_screen` 15,266 · `rejected_at_onsite` 7,462 · `candidate_withdrew` 13,551 · `declined_offer` 1,311 · `position_filled` 18,946 · `req_cancelled` 1,245 · `not_selected` 25 · `candidate_left_company` 35. |
+| `disposition_reason` | VARCHAR | Why it ended without a hire. NULL means hired, or still in process. Values: `rejected_at_applied` 117,965 · `rejected_at_recruiter_screen` 32,033 · `rejected_at_hiring_manager_screen` 14,972 · `rejected_at_onsite` 7,370 · `candidate_withdrew` 13,367 · `declined_offer` 1,332 · `position_filled` 17,826 · `req_cancelled` 1,446 · `not_selected` 20 · `candidate_left_company` 36. |
 
 #### `application_stage_event`
 
 Each stage an application entered, in order: applied (resume review), recruiter_screen, hiring_manager_screen, onsite, offer.
 
-- **Grain:** one row per application per stage entered (361,091 rows)
+- **Grain:** one row per application per stage entered (355,021 rows)
 - **Keys:** primary key `stage_event_id`
 - **Time:** event_log. One row per change. State on date D is the latest row with a date on or before D.
 - **Sensitivity:** recruiting
@@ -324,39 +296,39 @@ Rules:
 |---|---|---|
 | `stage_event_id` | BIGINT | Stage event id. |
 | `application_id` | BIGINT | Application. References `application.application_id`. |
-| `stage` | VARCHAR | Stage. Values: `applied` 215,061 · `recruiter_screen` 81,014 · `hiring_manager_screen` 40,491 · `onsite` 18,960 · `offer` 5,565. |
+| `stage` | VARCHAR | Stage. Values: `applied` 211,722 · `recruiter_screen` 79,472 · `hiring_manager_screen` 39,685 · `onsite` 18,596 · `offer` 5,546. |
 | `entered_date` | DATE | Entered the stage. Range 2021-01-01 to 2025-12-31. |
 | `exited_date` | DATE | Left the stage. NULL means the stage was still open at END. Range 2021-01-01 to 2025-12-31. |
-| `outcome` | VARCHAR | accept and decline only occur at the offer stage. NULL means the stage was still open at END. Values: `advance` 147,322 · `reject` 193,847 · `withdraw` 13,585 · `accept` 4,226 · `decline` 1,311. |
+| `outcome` | VARCHAR | accept and decline only occur at the offer stage. NULL means the stage was still open at END. Values: `advance` 144,580 · `reject` 190,355 · `withdraw` 13,403 · `accept` 4,194 · `decline` 1,332. |
 
 #### `interview_scorecard`
 
 One interviewer's verdict on one interview.
 
-- **Grain:** one row per interviewer per interview stage (164,490 rows)
+- **Grain:** one row per interviewer per interview stage (162,071 rows)
 - **Keys:** primary key `scorecard_id`
 - **Time:** event_log. One row per change. State on date D is the latest row with a date on or before D.
 - **Sensitivity:** recruiting
 
 Rules:
-- Recruiter screen: the recruiter. Hiring manager screen: the hiring manager. Onsite: the hiring manager plus up to 3 team members.
+- Recruiter screen: the recruiter. Hiring manager screen: the hiring manager. Onsite: the hiring manager plus up to 3 teammates.
 - Recommendations mostly agree with the stage outcome, with deliberate disagreements.
 
 | column | type | meaning |
 |---|---|---|
 | `scorecard_id` | BIGINT | Scorecard id. |
 | `application_id` | BIGINT | Application. References `application.application_id`. |
-| `stage` | VARCHAR | Interview stage. Values: `recruiter_screen` 72,988 · `hiring_manager_screen` 34,226 · `onsite` 57,276. |
+| `stage` | VARCHAR | Interview stage. Values: `recruiter_screen` 71,715 · `hiring_manager_screen` 33,568 · `onsite` 56,788. |
 | `interviewer_employee_id` | BIGINT | Interviewer; always active on submitted_date. References `employee.employee_id`. |
 | `submitted_date` | DATE | Submitted; the day the stage was decided. Range 2021-01-01 to 2025-12-31. |
-| `recommendation` | VARCHAR | Interviewer's recommendation. Values: `strong_yes` 30,603 · `yes` 59,241 · `no` 51,296 · `strong_no` 23,350. |
+| `recommendation` | VARCHAR | Interviewer's recommendation. Values: `strong_yes` 29,885 · `yes` 58,534 · `no` 50,488 · `strong_no` 23,164. |
 | `feedback_text` | VARCHAR | Written interview feedback. Placeholder: NULL until the text step runs (section 9). |
 
 #### `offer`
 
 An offer extended to an application that passed onsite.
 
-- **Grain:** one row per offer (at most one per application) (5,565 rows)
+- **Grain:** one row per offer (at most one per application) (5,546 rows)
 - **Keys:** primary key `offer_id`; unique `application_id`
 - **Time:** lifecycle. One row per record, with milestone dates filled in as it progresses.
 - **Sensitivity:** recruiting
@@ -373,9 +345,9 @@ Rules:
 | `job_level` | BIGINT | Offered level. Range 3 to 7. |
 | `location_id` | BIGINT | Offered location. References `dim_location.location_id`. |
 | `base_salary_offered` | BIGINT | Offered base salary (USD). Sensitivity: **compensation**. |
-| `decision` | VARCHAR | Candidate's decision. NULL means awaiting a decision at END. Values: `accepted` 4,226 · `declined` 1,313. |
+| `decision` | VARCHAR | Candidate's decision. NULL means awaiting a decision at END. Values: `accepted` 4,194 · `declined` 1,333. |
 | `decision_date` | DATE | Decided. NULL means awaiting a decision at END. Range 2021-01-01 to 2025-12-31. |
-| `decline_reason` | VARCHAR | Why it was declined; left_company = an internal candidate left before deciding. NULL means accepted or undecided. Values: `comp` 555 · `competing_offer` 349 · `role_scope` 193 · `location` 91 · `personal` 123 · `left_company` 2. |
+| `decline_reason` | VARCHAR | Why it was declined; left_company = an internal candidate left before deciding. NULL means accepted or undecided. Values: `comp` 572 · `competing_offer` 352 · `role_scope` 184 · `location` 104 · `personal` 120 · `left_company` 1. |
 | `competing_offer_flag` | BOOLEAN | Candidate reported another offer. |
 | `start_date` | DATE | Agreed start date. May fall after END. NULL means declined or undecided. Range 2021-01-01 to 2026-12-31. |
 
@@ -383,23 +355,24 @@ Rules:
 
 #### `employee`
 
-Everyone ever employed. Identity only: all state (team, job, manager, status) lives in employment_event.
+Everyone ever employed. Identity only: job, manager, status and reporting chain live in employment_event and reporting_chain.
 
-- **Grain:** one row per person ever employed (6,518 rows)
-- **Keys:** primary key `employee_id`
+- **Grain:** one row per person ever employed (6,536 rows)
+- **Keys:** primary key `employee_id`; unique `alias`
 - **Time:** static. No time dimension, or the row describes something that never changes.
 - **Sensitivity:** people
 
 Rules:
-- Rehires keep their employee_id; their history is one timeline in employment_event.
+- Rehires keep their employee_id and alias; their history is one timeline.
 
 | column | type | meaning |
 |---|---|---|
 | `employee_id` | BIGINT | Employee id, also user_id in user_role. |
+| `alias` | VARCHAR | Unique login-style alias, never reused. The name reports and org chains use. Format `[a-z]+[0-9]*`. |
 | `first_name` | VARCHAR | Fake first name. |
 | `last_name` | VARCHAR | Fake last name. |
 | `legal_name` | VARCHAR | First and last name. Not unique. |
-| `work_email` | VARCHAR | Fake work email. Format `[a-z]*\.[a-z]*\.[0-9]+@acme\.example`. |
+| `work_email` | VARCHAR | alias@acme.example. Format `[a-z]+[0-9]*@acme\.example`. |
 | `original_hire_date` | DATE | First hire. Range 2014-01-01 to 2025-12-31. |
 | `most_recent_hire_date` | DATE | Latest hire or rehire; tenure counts from here. Range 2014-01-01 to 2025-12-31. |
 | `is_rehire` | BOOLEAN | Has at least one rehire event. |
@@ -408,7 +381,7 @@ Rules:
 
 The source of truth for employment. Every hire, rehire, transfer, promotion, job change, manager change, leave and termination is a row.
 
-- **Grain:** one row per change, at most one per employee per day (14,965 rows)
+- **Grain:** one row per change, at most one per employee per day (15,117 rows)
 - **Keys:** primary key `event_id`; unique `employee_id`, `effective_date`
 - **Time:** event_log. One row per change. State on date D is the latest row with a date on or before D.
 - **Sensitivity:** people
@@ -419,52 +392,99 @@ Rules:
 - Same-day changes merge into one row; the more important type wins (termination > hire/rehire > transfer > promotion > job_change/leave > manager_change).
 - First event is always hire. After a termination the only next event is rehire. leave_return only follows leave.
 - Everyone employed on 2021-01-01 has one hire event (event_reason = initial_load) at their real hire date, carrying their 2021-01-01 state. Analyze dynamics from 2021 on.
-- A reorg moves teams in dim_org_unit; team members get no event.
+- A reorg is a manager change for a team's leader. People below get no event, but their reporting_chain changes the same day.
 
 | column | type | meaning |
 |---|---|---|
 | `event_id` | BIGINT | Chronological event id. |
 | `employee_id` | BIGINT | Employee. References `employee.employee_id`. |
-| `event_type` | VARCHAR | What changed. Values: `hire` 6,518 · `rehire` 206 · `transfer` 1,105 · `promotion` 1,626 · `job_change` 131 · `manager_change` 2,064 · `leave_start` 562 · `leave_return` 519 · `termination` 2,234. |
+| `event_type` | VARCHAR | What changed. Values: `hire` 6,536 · `rehire` 169 · `transfer` 1,102 · `promotion` 1,668 · `job_change` 155 · `manager_change` 2,241 · `leave_start` 522 · `leave_return` 482 · `termination` 2,242. |
 | `effective_date` | DATE | First day the new state applies. Range 2014-01-01 to 2025-12-31. |
-| `org_unit_id` | BIGINT | Unit after the event: a team, or an org/division for leaders. References `dim_org_unit.org_unit_id`. |
 | `job_id` | BIGINT | Job after the event. References `dim_job.job_id`. |
 | `job_level` | BIGINT | Level after the event. Range 3 to 10. |
 | `location_id` | BIGINT | Location after the event. References `dim_location.location_id`. |
-| `manager_employee_id` | BIGINT | Manager after the event. NULL means the CEO. References `employee.employee_id`. |
-| `employment_status` | VARCHAR | Status after the event. Values: `active` 12,154 · `leave` 577 · `terminated` 2,234. |
-| `event_reason` | VARCHAR | hire: initial_load. transfer: lateral_move, internal_application. promotion and job_change: cycle, succession, new_people_manager, reorg. manager_change: manager_departed, reorg. termination: the exit reason. NULL means no reason recorded (external hires, rehires, leaves). Values: `initial_load` 3,102 · `lateral_move` 575 · `internal_application` 530 · `cycle` 1,403 · `succession` 272 · `new_people_manager` 81 · `reorg` 3 · `manager_departed` 2,062 · `career_growth` 444 · `comp` 503 · `manager` 175 · `relocation` 156 · `personal` 209 · `competing_offer` 286 · `performance` 229 · `misconduct` 52 · `restructuring` 124 · `reduction_in_force` 56. |
+| `manager_employee_id` | BIGINT | Manager after the event. reporting_chain is rebuilt from these links. NULL means the CEO. References `employee.employee_id`. |
+| `employment_status` | VARCHAR | Status after the event. Values: `active` 12,343 · `leave` 532 · `terminated` 2,242. |
+| `event_reason` | VARCHAR | hire: initial_load. transfer: lateral_move, internal_application. promotion and job_change: cycle, succession, new_people_manager, reorg. manager_change: manager_departed, reorg. termination: the exit reason. NULL means no reason recorded (external hires, rehires, leaves). Values: `initial_load` 3,102 · `lateral_move` 585 · `internal_application` 517 · `cycle` 1,450 · `succession` 288 · `new_people_manager` 84 · `reorg` 3 · `manager_departed` 2,239 · `career_growth` 445 · `comp` 500 · `manager` 163 · `relocation` 188 · `personal` 246 · `competing_offer` 274 · `performance` 225 · `misconduct` 44 · `restructuring` 100 · `reduction_in_force` 57. |
 | `application_id` | BIGINT | The application that led to this hire or move: the HRIS-to-ATS join. NULL means not a hire, rehire or internal-application transfer. References `application.application_id`. |
+
+#### `reporting_chain`
+
+Each employee's full management chain, effective dated. This is the hierarchy every report anchors on: there are no org codes.
+
+- **Grain:** one row per employee per chain version, only while employed (13,914 rows)
+- **Keys:** primary key `employee_id`, `valid_from`
+- **Time:** effective_dated. Versions with valid_from and valid_to (inclusive). Join on the id and the date.
+- **Sensitivity:** people
+
+Rules:
+- Everyone under leader X on date D: `D between valid_from and valid_to` and `org_chain like '%.x.%'` (the dots on both sides prevent partial matches), or `list_contains(chain_ids, X_id)`.
+- The chain includes the employee: org_lvl_(depth) is the employee and org_lvl_(depth-1) is their manager.
+- Break down a leader at depth k by the leaders below them: group by org_lvl_(k+1). The leader's own row has org_lvl_(k+1) NULL.
+- A chain changes whenever anyone above the person changes, even with no event of their own, so it is rebuilt from everyone's manager links rather than stored on events.
+- Chains start on 2021-01-01; pre-2021 history is collapsed. The CEO and VPs (depth 1-2) never change in this dataset.
+
+| column | type | meaning |
+|---|---|---|
+| `employee_id` | BIGINT | Employee. References `employee.employee_id`. |
+| `alias` | VARCHAR | Employee's alias. References `employee.alias`. |
+| `valid_from` | DATE | First day of this chain version. Range 2021-01-01 to 2025-12-31. |
+| `valid_to` | DATE | Last day of this chain version; 9999-12-31 while current. Range 2021-01-01 to 9999-12-31. |
+| `depth` | BIGINT | Position in the hierarchy: 1 = CEO, 2 = VP, 3 = director, 4 = team lead, and so on. Range 1 to 8. |
+| `org_chain` | VARCHAR | Aliases from the CEO down to the employee, dot-delimited with dots at both ends. Format `\.([a-z]+[0-9]*\.)+`. |
+| `chain_ids` | BIGINT[] | Employee ids from the CEO down to the employee. |
+| `manager_employee_id` | BIGINT | Direct manager. NULL means the employee is the CEO. References `employee.employee_id`. |
+| `manager_alias` | VARCHAR | Direct manager's alias. NULL means the employee is the CEO. References `employee.alias`. |
+| `org_lvl_1` | VARCHAR | Level-1 leader (the CEO). References `employee.alias`. |
+| `org_lvl_2` | VARCHAR | Level-2 leader (VP). NULL means depth < 2. References `employee.alias`. |
+| `org_lvl_3` | VARCHAR | Level-3 leader (director). NULL means depth < 3. References `employee.alias`. |
+| `org_lvl_4` | VARCHAR | Level-4 leader (team lead). NULL means depth < 4. References `employee.alias`. |
+| `org_lvl_5` | VARCHAR | Level-5 alias. NULL means depth < 5. References `employee.alias`. |
+| `org_lvl_6` | VARCHAR | Level-6 alias. NULL means depth < 6. References `employee.alias`. |
+| `org_lvl_7` | VARCHAR | Level-7 alias. NULL means depth < 7. References `employee.alias`. |
+| `org_lvl_8` | VARCHAR | Level-8 alias. NULL means depth < 8. References `employee.alias`. |
 
 #### `employee_snapshot_monthly`
 
-Month-end state of everyone active or on leave, derived from employment_event. A convenience copy: if it disagrees with events, the snapshot is wrong.
+Month-end state of everyone active or on leave, with their reporting chain. Derived from employment_event and reporting_chain; if it disagrees with them, the snapshot is wrong.
 
-- **Grain:** one row per employee per month end (225,579 rows)
+- **Grain:** one row per employee per month end (225,573 rows)
 - **Keys:** primary key `snapshot_date`, `employee_id`
 - **Time:** snapshot. State copied at fixed dates, derived from an event log.
 - **Sensitivity:** people
 
 Rules:
 - Headcount excludes employment_status = 'leave' unless a question asks to include it.
+- Headcount under leader X at a month end: `snapshot_date = D and org_chain like '%.x.%'`.
 
 | column | type | meaning |
 |---|---|---|
 | `snapshot_date` | DATE | Month end. Range 2021-01-31 to 2025-12-31. |
 | `employee_id` | BIGINT | Employee. References `employee.employee_id`. |
-| `org_unit_id` | BIGINT | Unit on snapshot_date. References `dim_org_unit.org_unit_id`. |
 | `job_id` | BIGINT | Job on snapshot_date. References `dim_job.job_id`. |
 | `job_level` | BIGINT | Level on snapshot_date. Range 3 to 10. |
 | `location_id` | BIGINT | Location on snapshot_date. References `dim_location.location_id`. |
-| `manager_employee_id` | BIGINT | Manager on snapshot_date. NULL means the CEO. References `employee.employee_id`. |
-| `employment_status` | VARCHAR | Status on snapshot_date. Values: `active` 223,982 · `leave` 1,597. |
+| `employment_status` | VARCHAR | Status on snapshot_date. Values: `active` 224,111 · `leave` 1,462. |
 | `tenure_months` | BIGINT | Months since most recent hire or rehire. Range 0 to 200. |
+| `manager_employee_id` | BIGINT | Manager on snapshot_date. NULL means the CEO. References `employee.employee_id`. |
+| `manager_alias` | VARCHAR | Manager's alias. NULL means the CEO. References `employee.alias`. |
+| `depth` | BIGINT | Depth in the hierarchy (1 = CEO). Range 1 to 8. |
+| `org_chain` | VARCHAR | Aliases from the CEO down to the employee. Format `\.([a-z]+[0-9]*\.)+`. |
+| `chain_ids` | BIGINT[] | Employee ids from the CEO down to the employee. |
+| `org_lvl_1` | VARCHAR | Level-1 leader (the CEO). References `employee.alias`. |
+| `org_lvl_2` | VARCHAR | Level-2 leader (VP). NULL means depth < 2. References `employee.alias`. |
+| `org_lvl_3` | VARCHAR | Level-3 leader (director). NULL means depth < 3. References `employee.alias`. |
+| `org_lvl_4` | VARCHAR | Level-4 leader (team lead). NULL means depth < 4. References `employee.alias`. |
+| `org_lvl_5` | VARCHAR | Level-5 alias. NULL means depth < 5. References `employee.alias`. |
+| `org_lvl_6` | VARCHAR | Level-6 alias. NULL means depth < 6. References `employee.alias`. |
+| `org_lvl_7` | VARCHAR | Level-7 alias. NULL means depth < 7. References `employee.alias`. |
+| `org_lvl_8` | VARCHAR | Level-8 alias. NULL means depth < 8. References `employee.alias`. |
 
 #### `compensation`
 
 Pay changes.
 
-- **Grain:** one row per pay change, at most one per employee per day (25,564 rows)
+- **Grain:** one row per pay change, at most one per employee per day (25,585 rows)
 - **Keys:** primary key `employee_id`, `effective_date`
 - **Time:** event_log. One row per change. State on date D is the latest row with a date on or before D.
 - **Sensitivity:** compensation
@@ -478,16 +498,16 @@ Rules:
 | `employee_id` | BIGINT | Employee. References `employee.employee_id`. |
 | `effective_date` | DATE | First day this pay applies. Range 2014-01-01 to 2025-12-31. |
 | `base_salary` | BIGINT | Annual base salary (USD). |
-| `currency` | VARCHAR | Always USD. Values: `USD` 25,564. |
+| `currency` | VARCHAR | Always USD. Values: `USD` 25,585. |
 | `bonus_target_pct` | DOUBLE | Bonus target as a fraction of base; Sales adds 0.25 variable. Range 0 to 1. |
 | `equity_grant_value` | BIGINT | Equity granted with this change (USD); 0 when none. |
-| `comp_change_reason` | VARCHAR | Why pay changed. Values: `hire` 6,518 · `rehire` 206 · `merit` 16,461 · `promotion` 1,626 · `transfer` 530 · `relocation` 92 · `job_change` 131. |
+| `comp_change_reason` | VARCHAR | Why pay changed. Values: `hire` 6,536 · `rehire` 169 · `merit` 16,455 · `promotion` 1,669 · `transfer` 517 · `relocation` 84 · `job_change` 155. |
 
 #### `performance_rating`
 
 Twice-yearly performance ratings.
 
-- **Grain:** one row per employee per rating cycle (36,404 rows)
+- **Grain:** one row per employee per rating cycle (36,395 rows)
 - **Keys:** primary key `employee_id`, `cycle`
 - **Time:** periodic. One row per cycle (survey, rating cycle, plan quarter).
 - **Sensitivity:** performance
@@ -501,19 +521,20 @@ Rules:
 | `cycle` | VARCHAR | Cycle, e.g. 2024H2. Format `[0-9]{4}H[12]`. |
 | `rating_date` | DATE | June 30 or December 31. Range 2021-06-30 to 2025-12-31. |
 | `rating` | BIGINT | 1 (lowest) to 5; roughly 3/12/55/22/8% of ratings. Range 1 to 5. |
-| `calibrated_flag` | BOOLEAN | Always true in this dataset. Values: `true` 36,404. |
+| `calibrated_flag` | BOOLEAN | Always true in this dataset. Values: `true` 36,395. |
 | `manager_employee_id_at_cycle` | BIGINT | Manager on rating_date. NULL means the CEO. References `employee.employee_id`. |
 
 #### `termination`
 
 Details of each exit. One row per termination event.
 
-- **Grain:** one row per exit (a rehired person can have several) (2,234 rows)
+- **Grain:** one row per exit (a rehired person can have several) (2,242 rows)
 - **Keys:** primary key `employee_id`, `termination_date`
 - **Time:** event_log. One row per change. State on date D is the latest row with a date on or before D.
 - **Sensitivity:** people
 
 Rules:
+- Attribute an exit to leaders through the reporting_chain valid on the last working day (termination_date - 1).
 - Voluntary attrition = voluntary terminations in the period / average month-end active headcount, annualized.
 - Regretted attrition = voluntary terminations with regretted_flag = true.
 
@@ -521,11 +542,10 @@ Rules:
 |---|---|---|
 | `employee_id` | BIGINT | Employee. References `employee.employee_id`. |
 | `termination_date` | DATE | First day not employed. Range 2021-01-01 to 2025-12-31. |
-| `termination_type` | VARCHAR | Who decided. Values: `voluntary` 1,773 · `involuntary` 461. |
-| `exit_reason` | VARCHAR | Voluntary: career_growth, comp, manager, relocation, personal, competing_offer. Involuntary: performance, misconduct, restructuring, reduction_in_force (the 2023-02-15 layoff). Values: `career_growth` 444 · `comp` 503 · `manager` 175 · `relocation` 156 · `personal` 209 · `competing_offer` 286 · `performance` 229 · `misconduct` 52 · `restructuring` 124 · `reduction_in_force` 56. |
+| `termination_type` | VARCHAR | Who decided. Values: `voluntary` 1,816 · `involuntary` 426. |
+| `exit_reason` | VARCHAR | Voluntary: career_growth, comp, manager, relocation, personal, competing_offer. Involuntary: performance, misconduct, restructuring, reduction_in_force (the 2023-02-15 layoff). Values: `career_growth` 445 · `comp` 500 · `manager` 163 · `relocation` 188 · `personal` 246 · `competing_offer` 274 · `performance` 225 · `misconduct` 44 · `restructuring` 100 · `reduction_in_force` 57. |
 | `regretted_flag` | BOOLEAN | Voluntary and last_rating >= 4. |
 | `rehire_eligible` | BOOLEAN | Voluntary and last_rating >= 3. |
-| `last_org_unit_id` | BIGINT | Unit on the last working day. References `dim_org_unit.org_unit_id`. |
 | `last_job_id` | BIGINT | Job on the last working day. References `dim_job.job_id`. |
 | `last_job_level` | BIGINT | Level on the last working day. Range 3 to 10. |
 | `last_manager_employee_id` | BIGINT | Manager on the last working day. Never NULL: the CEO does not leave in this dataset. References `employee.employee_id`. |
@@ -536,13 +556,14 @@ Rules:
 
 Annual engagement survey answers (October 15, about 74% response).
 
-- **Grain:** one row per respondent per survey cycle (13,827 rows)
+- **Grain:** one row per respondent per survey cycle (13,799 rows)
 - **Keys:** primary key `response_id`; unique `survey_cycle`, `employee_id`
 - **Time:** periodic. One row per cycle (survey, rating cycle, plan quarter).
 - **Sensitivity:** engagement
 
 Rules:
 - Never show an individual response. Suppress any aggregate with fewer than 5 respondents.
+- Attribute a response to leaders through the respondent's reporting_chain on response_date.
 
 | column | type | meaning |
 |---|---|---|
@@ -550,39 +571,38 @@ Rules:
 | `survey_cycle` | VARCHAR | Survey year. Format `[0-9]{4}`. |
 | `response_date` | DATE | Survey date. Range 2021-10-15 to 2025-10-15. |
 | `employee_id` | BIGINT | Respondent. Present for authorization testing; real survey tools hide it. References `employee.employee_id`. |
-| `org_unit_id` | BIGINT | Respondent's unit on response_date. References `dim_org_unit.org_unit_id`. |
 | `manager_employee_id` | BIGINT | Respondent's manager on response_date. NULL means the respondent is the CEO. References `employee.employee_id`. |
 | `engagement_score` | DOUBLE | Overall engagement, 1 to 5. Range 1 to 5. |
 | `manager_score` | DOUBLE | Rating of their manager, 1 to 5. Range 1 to 5. |
 | `growth_score` | DOUBLE | Career growth, 1 to 5. Range 1 to 5. |
-| `comment_theme` | VARCHAR | What the comment is about; none = no comment. Ground truth for comment_text. Values: `manager` 153 · `comp` 2,034 · `career_growth` 2,251 · `reorg` 228 · `workload` 1,541 · `tools` 1,545 · `team_positive` 1,534 · `mission_positive` 1,449 · `none` 3,092. |
-| `comment_sentiment` | VARCHAR | Sentiment of the comment. NULL means no comment (comment_theme = none). Values: `negative` 7,752 · `positive` 2,983. |
+| `comment_theme` | VARCHAR | What the comment is about; none = no comment. Ground truth for comment_text. Values: `manager` 136 · `comp` 2,018 · `career_growth` 2,258 · `reorg` 246 · `workload` 1,514 · `tools` 1,550 · `team_positive` 1,505 · `mission_positive` 1,521 · `none` 3,051. |
+| `comment_sentiment` | VARCHAR | Sentiment of the comment. NULL means no comment (comment_theme = none). Values: `negative` 7,722 · `positive` 3,026. |
 | `comment_text` | VARCHAR | Free-text comment. Placeholder: NULL until the text step runs (section 9). |
 
 ### Governance
 
 #### `user_role`
 
-Effective-dated access grants. user_id is an employee_id.
+Effective-dated access grants. user_id is an employee_id; scope is always a leader's tree.
 
-- **Grain:** one row per grant interval (801 rows)
-- **Keys:** unique `user_id`, `role`, `scope_org_unit_id`, `valid_from`
+- **Grain:** one row per grant interval (820 rows)
+- **Keys:** unique `user_id`, `role`, `scope_leader_employee_id`, `valid_from`
 - **Time:** effective_dated. Versions with valid_from and valid_to (inclusive). Join on the id and the date.
 - **Sensitivity:** access_control
 
 Rules:
-- manager: while the person has at least one direct report; scope is their whole reporting tree on the date.
-- hrbp: exactly one per level-3 org at all times; scope is that org's subtree on the date.
-- executive: division VPs (their division) and the CEO (the company); aggregates only, below team level.
+- manager: while the person has at least one direct report; scope is their own tree on the date.
+- hrbp: one HRBP per director; scope is that director's tree. The grant moves when the director changes.
+- executive: VPs and the CEO; their own tree, aggregates only.
 - people_analytics: members of the People Analytics team; everything.
 - A grant ends the day before the person leaves the position or the company, and the successor's starts that day. Leave does not suspend access.
 
 | column | type | meaning |
 |---|---|---|
 | `user_id` | BIGINT | The employee holding the grant. References `employee.employee_id`. |
-| `role` | VARCHAR | Role. Values: `manager` 727 · `hrbp` 32 · `executive` 6 · `people_analytics` 36. |
-| `scope_type` | VARCHAR | How scope is resolved: manager, hrbp, executive, people_analytics respectively. Values: `reporting_tree` 727 · `org_subtree` 32 · `aggregate_subtree` 6 · `all` 36. |
-| `scope_org_unit_id` | BIGINT | Root of the scope. NULL means role = manager: scope is people (the reporting tree), not an org unit. References `dim_org_unit.org_unit_id`. |
+| `role` | VARCHAR | Role. Values: `manager` 751 · `hrbp` 32 · `executive` 5 · `people_analytics` 32. |
+| `scope_type` | VARCHAR | tree = individual rows under the scope leader, tree_aggregate = aggregates only, all = everything. Values: `tree` 783 · `tree_aggregate` 5 · `all` 32. |
+| `scope_leader_employee_id` | BIGINT | Root of the visible tree: the user themself for managers and executives, a director for HRBPs. NULL means role = people_analytics (everything). References `employee.employee_id`. |
 | `valid_from` | DATE | First day of the grant. Grants existing at START begin 2021-01-01. Range 2021-01-01 to 2025-12-31. |
 | `valid_to` | DATE | Last day of the grant; 9999-12-31 while current. Range 2021-01-01 to 9999-12-31. |
 
@@ -600,61 +620,61 @@ Stable personas for tests, evals and demos, valid on 2025-12-31. Look personas u
 | `persona` | VARCHAR | Persona name. Values: `people_analytics` 1 · `hrbp_ai_platform` 1 · `executive_platform` 1 · `ceo` 1 · `manager_checkout_lead` 1 · `manager_team_19_lead` 1 · `manager_small_team` 1 · `former_manager` 1 · `ic_no_access` 1 · `planted_bad_manager` 1. |
 | `user_id` | BIGINT | Employee id to act as. References `employee.employee_id`. |
 | `role` | VARCHAR | Role on 2025-12-31. Values: `people_analytics` 1 · `hrbp` 1 · `executive` 2 · `manager` 3 · `none` 3. |
-| `scope_org_unit_id` | BIGINT | Scope root for hrbp, executive and people_analytics. NULL means no org scope (a manager, or no role). References `dim_org_unit.org_unit_id`. |
+| `scope_leader_employee_id` | BIGINT | Root of the tree the persona may see. NULL means no tree scope (people_analytics, or no role). References `employee.employee_id`. |
 | `description` | VARCHAR | What the persona is for. |
 
-## 4. Organization
+## 4. Leadership hierarchy
 
-Acme Corp (1) has four divisions (2 to 5). Level-3 orgs as of END:
+The hierarchy is the management chain: CEO (depth 1) → VP (2) → director (3) → team lead (4) → line manager (5) → individual contributor (6). The CEO is `anichols`. On 2025-12-31 the deepest chain has depth 6, and managers have 9.0 direct reports on average.
 
-| division | orgs (id) |
-|---|---|
-| Consumer | Mobile 6, Growth 7, Payments 8 |
-| Enterprise | Cloud Sales 9, Solutions 10, Partner 11 |
-| Platform | Infrastructure 12, Data Platform 13, AI Platform 14, Security 15, Applied AI 64 |
-| Corporate | People 16, Finance 17, Legal 18 |
+VPs on 2025-12-31, with active headcount in their tree (VP included):
 
-- **Teams:** 45 teams with ids 19 to 63, in the order listed in `params.ORG_DESIGN` (for example Checkout 27, Talent Acquisition 54, HR Business Partners 55, People Analytics 56).
-- **Reorg 1 (2023-04-01):** team **19, App Experience**, moves between orgs. Its parent is Mobile on 2023-03-31 and Growth on 2023-04-30. Team members get no event, because their team didn't change; only the team lead gets a `manager_change` (`reorg`).
-- **Reorg 2 (2024-09-01):** AI Platform is split. A new org, **Applied AI (64)**, is created, and Applied ML 49, Evaluation 50 move under it. One of those teams' leads becomes its director (`promotion`, reason `reorg`). HRBP coverage and the headcount plan are re-based that day.
+| VP alias | name | active headcount |
+|---|---|---|
+| bahluwal | Bailey Ahluwalia | 441 |
+| glanka | Girish Lanka | 1,089 |
+| mmorales | Maurice Morales | 1,670 |
+| msmith | Mary Smith | 1,233 |
 
-**Management chain:** CEO → division VP (level 9) → org director (8) → team lead (7) → line managers (6) → ICs.
-- On 2025-12-31 the deepest chain is 5 hops, and the average span of control is 9.1.
-- New hires go to the line manager with the fewest reports. When every line manager has 10, the best-rated eligible IC becomes a new line manager.
-- When a manager leaves, the best-rated eligible direct report is promoted into the role (`succession`) and takes over the rest; if nobody fits, the reports move up a level.
+The Platform VP is `mmorales` (persona `executive_platform`). The CEO and VPs never leave in this dataset, so a VP's tree is a continuous history from 2021 to 2025. Directors and below do change; with no org labels, a director's history stays with that person.
+
+- **Reorg 1 (2023-04-01):** team lead `lbrown` moved from director `njones` to director `asur` (`manager_change`, reason `reorg`). 81 people in that lead's tree changed `org_lvl_3` without any event of their own.
+- **Reorg 2 (2024-09-01):** team lead `afox2`, who reported to director `arodrigu`, was promoted to director (`promotion`, reason `reorg`) and took over two teams. Their tree had 204 active people on 2024-09-30.
+- **Succession:** when a manager leaves, the best-rated eligible direct report is promoted into the role (`succession`) and takes over the rest; if nobody fits, the reports move up a level. New hires go to the line manager with the fewest reports, and when every line manager has 10, the best-rated eligible IC becomes a new line manager.
+- **Does a leader count in their own tree?** Decided per metric in layer 2: included for org size and flows (headcount, hires, attrition, promotions, pay aggregates), excluded for manager effectiveness (span of control, engagement, attrition under a manager).
 
 ## 5. Authorization rules (enforced in layer 3)
 
-From PROJECT_PLAN:
+Every scope is a leader's tree on the date (`user_role.scope_leader_employee_id`).
 
 | data class | manager | hrbp | executive | people_analytics |
 |---|---|---|---|---|
-| people (roster, events, headcount) | own reporting tree as of the date | org subtree as of the date | division subtree, aggregated below team level | all |
-| compensation | individual rows for direct reports only; aggregates for the tree | individual rows in the subtree | aggregated | all |
-| performance | individual rows for direct reports only | individual rows in the subtree | aggregated | all |
+| people (roster, events, headcount) | own tree | the director's tree they cover | own tree, aggregated below team level | all |
+| compensation | individual rows for direct reports only; aggregates for the tree | individual rows in the tree | aggregated | all |
+| performance | individual rows for direct reports only | individual rows in the tree | aggregated | all |
 | engagement | aggregates only, suppressed below 5 respondents | same | same | same (never individual) |
 
 **To decide in layer 3:** recruiting data is not covered by the plan yet. The proposed default:
 - Hiring managers and recruiters see their own reqs and applicants.
-- HRBPs see reqs in their org subtree.
+- HRBPs see reqs whose hiring manager is in their director's tree.
 - Executives see aggregates.
 - people_analytics sees everything.
 - Candidate contact details (`candidate_pii`) are visible to recruiters and people_analytics only.
 
-**Demo personas** (`demo_user`) for tests and evals, valid on 2025-12-31. Look them up by persona name; ids are only stable for this seed.
+**Demo personas** (`demo_user`) for tests and evals, valid on 2025-12-31. Look them up by persona name; ids and aliases are only stable for this seed.
 
-| persona | user_id | role | scope_org_unit_id | what it is for |
-|---|---|---|---|---|
-| ceo | 1 | executive | 1 | Whole company, aggregated only |
-| executive_platform | 4 | executive | 4 | Platform division, aggregated only |
-| former_manager | 22 | none | NULL | Managed people before 2024, not today |
-| hrbp_ai_platform | 3523 | hrbp | 14 | HRBP for AI Platform org subtree |
-| ic_no_access | 28 | none | NULL | Individual contributor with no access rights |
-| manager_checkout_lead | 617 | manager | NULL | Lead of Checkout team (S2 team) |
-| manager_small_team | 2906 | manager | NULL | Line manager with 3-4 reports (suppression tests) |
-| manager_team_19_lead | 25 | manager | NULL | Lead of the team moved in reorg 1 |
-| people_analytics | 453 | people_analytics | 1 | Sees everything |
-| planted_bad_manager | 618 | none | NULL | S2: low-quality line manager in Checkout, exited 2025-07-15 |
+| persona | user_id | alias | role | scope leader | what it is for |
+|---|---|---|---|---|---|
+| ceo | 1 | anichols | executive | anichols | Whole company, aggregated only |
+| executive_platform | 4 | mmorales | executive | mmorales | Platform VP: own tree, aggregated only |
+| former_manager | 277 | diqbal | none | NULL | Managed people before 2024, not today |
+| hrbp_ai_platform | 2884 | bali | hrbp | arodrigu | HRBP for the AI Platform director's tree |
+| ic_no_access | 28 | hhayward | none | NULL | Individual contributor with no access rights |
+| manager_checkout_lead | 617 | imatthew | manager | imatthew | Lead of the Checkout team (S2 team) |
+| manager_small_team | 448 | msoman | manager | msoman | Line manager with 3-4 reports (suppression tests) |
+| manager_team_19_lead | 19 | lbrown | manager | lbrown | Lead of the team moved in reorg 1 |
+| people_analytics | 1341 | jdin | people_analytics | NULL | Sees everything |
+| planted_bad_manager | 618 | cmann2 | none | NULL | S2: low-quality line manager in Checkout, exited 2025-07-15 |
 
 ## 6. Headline numbers
 
@@ -662,87 +682,89 @@ Rates use average month-end active headcount for the year.
 
 | year | active at year end | hires | rehires | internal moves | voluntary exits | involuntary exits | voluntary % | involuntary % | regretted share of voluntary % |
 |---|---|---|---|---|---|---|---|---|---|
-| 2021 | 3,267 | 519 | 15 | 84 | 268 | 72 | 8.6 | 2.3 | 30.6 |
-| 2022 | 3,747 | 811 | 49 | 126 | 322 | 63 | 9.2 | 1.8 | 29.5 |
-| 2023 | 3,855 | 536 | 36 | 96 | 340 | 127 | 9.0 | 3.4 | 40.9 |
-| 2024 | 4,113 | 765 | 46 | 109 | 447 | 96 | 11.3 | 2.4 | 34.5 |
-| 2025 | 4,462 | 785 | 60 | 115 | 396 | 103 | 9.2 | 2.4 | 37.1 |
+| 2021 | 3,283 | 507 | 9 | 86 | 259 | 59 | 8.3 | 1.9 | 35.5 |
+| 2022 | 3,733 | 803 | 43 | 114 | 315 | 73 | 9.0 | 2.1 | 43.5 |
+| 2023 | 3,875 | 587 | 29 | 90 | 350 | 128 | 9.3 | 3.4 | 39.1 |
+| 2024 | 4,120 | 734 | 31 | 121 | 444 | 71 | 11.1 | 1.8 | 38.3 |
+| 2025 | 4,434 | 803 | 57 | 106 | 448 | 95 | 10.4 | 2.2 | 31.7 |
 
-Active headcount was 3,069 on 2021-01-31 and 4,462 on 2025-12-31; 6,518 people were employed at some point. Initial-load hire events are dated before 2021, so the hires column counts only real hires.
+Active headcount was 3,071 on 2021-01-31 and 4,434 on 2025-12-31; 6,536 people were employed at some point. Initial-load hire events are dated before 2021, so the hires column counts only real hires.
 
 ## 7. Planted signals: known answers for evals
 
 These patterns are deliberate. Their parameters live under PLANTED SIGNALS in `params.py`, `tests/test_planted_signals.py` keeps them from disappearing, and the numbers below are verified facts.
 
-**S1: Platform attrition rose in 2024.** This is the answer to "why did attrition rise in Platform in 2024?"
+**S1: attrition rose in the Platform VP's tree in 2024.** This is the answer to "why did attrition rise under `mmorales` in 2024?"
 
-Voluntary attrition by division, %:
+Voluntary attrition in each VP's tree, % (each exit attributed by the chain on the last working day):
 
-| division | 2023 | 2024 | 2025 |
+| VP alias | 2023 | 2024 | 2025 |
 |---|---|---|---|
-| Consumer | 8.6 | 11.0 | 8.9 |
-| Enterprise | 10.3 | 9.0 | 8.5 |
-| Platform | 7.6 | 13.7 | 10.2 |
-| Corporate | 11.3 | 9.9 | 8.5 |
+| bahluwal | 10.1 | 8.1 | 10.8 |
+| glanka | 9.7 | 9.8 | 10.4 |
+| mmorales | 9.8 | 14.1 | 11.2 |
+| msmith | 8.1 | 9.7 | 9.4 |
 
-- **Driver 1, market pay:** the 2024 band jump (+12% Data, +6% Engineering) left those families below band. Platform is mostly Data and Engineering; Consumer, which also employs many engineers, rose a little too.
+- **Driver 1, market pay:** the 2024 band jump (+12% Data, +6% Engineering) left those families below band. Platform is mostly Data and Engineering; other trees with many engineers rose a little too.
 
 | job family | 2023-06-30 | 2024-06-30 |
 |---|---|---|
-| Data | 1.0 | 0.91 |
+| Data | 0.99 | 0.89 |
 | Engineering | 1.0 | 0.94 |
-| Sales | 1.01 | 1.01 |
+| Sales | 1.01 | 1.0 |
 
-- **Driver 2, uncertainty:** extra flight risk in Platform from 2024-06-01 to 2025-03-31, around the AI Platform split (reorg 2).
-- **Evidence in the survey:** Platform engagement fell in 2024 while other divisions held. Growth scores dropped too, `comment_theme = 'reorg'` appears, and exit reasons shift toward `competing_offer` and `comp`.
+- **Driver 2, uncertainty:** extra flight risk in the Platform tree from 2024-06-01 to 2025-03-31, around reorg 2.
+- **Evidence in the survey:** engagement in the Platform tree fell in 2024 while the others held. Growth scores dropped too, `comment_theme = 'reorg'` appears, and exit reasons shift toward `competing_offer` and `comp`.
 
-| division | 2023 | 2024 |
+| VP alias | 2023 | 2024 |
 |---|---|---|
-| Consumer | 3.73 | 3.69 |
-| Enterprise | 3.76 | 3.72 |
-| Platform | 3.73 | 3.22 |
-| Corporate | 3.73 | 3.72 |
+| bahluwal | 3.72 | 3.74 |
+| glanka | 3.72 | 3.71 |
+| mmorales | 3.72 | 3.21 |
+| msmith | 3.77 | 3.74 |
 
 **S2: one bad manager.**
-- **Who:** employee **618**, a line manager in Checkout (27).
-- **Attrition:** their reports quit at a 65% annualized rate, against 9.5% company-wide, and 11 exits cite `manager`.
-- **Engagement:** their average manager_score is 2.76, against 3.84 company-wide.
+- **Who:** employee 618 (`cmann2`), a line manager reporting to team lead `imatthew` (persona `manager_checkout_lead`).
+- **Attrition:** their direct reports quit at a 32% annualized rate, against 9.7% company-wide, and 8 exits cite `manager`.
+- **Engagement:** their average manager_score is 2.66, against 3.84 company-wide.
 - **Outcome:** exited as involuntary / `performance` on 2025-07-15.
 
-**S3: referrals convert and accept better.** External applicants only; internal applicants convert even better, so leaving them in inflates every channel.
+**S3: referrals convert and accept better.** External applicants only; internal applicants convert even better, so mixing them in inflates every channel.
 
 | source | passes resume review % | accepts offer % |
 |---|---|---|
-| agency | 46.3 | 58.6 |
-| campus | 28.2 | 70.0 |
-| inbound | 26.4 | 72.5 |
-| referral | 55.9 | 81.3 |
-| sourced | 42.2 | 68.6 |
+| agency | 46.2 | 62.6 |
+| campus | 28.0 | 68.2 |
+| inbound | 26.2 | 73.4 |
+| referral | 56.0 | 81.1 |
+| sourced | 42.1 | 64.1 |
 
 **S4: location effects in hiring.**
-- In Bangalore, 56.4% of declined offers cite `comp`, against 34.3% elsewhere.
+- In Bangalore, 56.0% of declined offers cite `comp`, against 35.0% elsewhere.
 - London reqs take a median 70 days from approval to fill, against 57 elsewhere.
 
 **S5: pay and performance drive who leaves.**
 
 | last rating | voluntary | involuntary |
 |---|---|---|
-| 1 | 47 | 96 |
-| 2 | 194 | 161 |
-| 3 | 915 | 177 |
-| 4 | 433 | 24 |
-| 5 | 184 | 3 |
+| 1 | 45 | 96 |
+| 2 | 198 | 165 |
+| 3 | 895 | 136 |
+| 4 | 467 | 24 |
+| 5 | 211 | 5 |
 
-- 35% of voluntary exits were rated 4-5, against 32% of all ratings. High performers paid below band are the most likely to quit, which is why regretted attrition matters.
-- 56% of involuntary exits were rated 1-2, against 13% of all ratings.
+- 37% of voluntary exits were rated 4-5, against 32% of all ratings. High performers paid below band are the most likely to quit, which is why regretted attrition matters.
+- 61% of involuntary exits were rated 1-2, against 13% of all ratings.
 
-**S6: hiring freeze.** On 2023-01-15, 124 open growth reqs were cancelled (`cancelled_hiring_freeze`). No growth reqs opened from 2023-01-15 to 2023-03-31; backfills continued.
+**S6: hiring freeze.** On 2023-01-15, 140 open growth reqs were cancelled (`cancelled_hiring_freeze`). No growth reqs opened from 2023-01-15 to 2023-03-31; backfills continued.
 
-**S7: Enterprise restructuring.** On 2023-02-15, 56 Enterprise employees were exited with `exit_reason = 'reduction_in_force'`, weighted toward low ratings, and none were backfilled. This drives the 2023 involuntary spike in the headline table.
+**S7: restructuring.** On 2023-02-15, 57 employees in the tree of VP `msmith` were exited with `exit_reason = 'reduction_in_force'`, weighted toward low ratings, and none were backfilled. This drives the 2023 involuntary spike in the headline table.
 
 ## 8. Known simplifications
 
-- Everyone is full time. Pay is in USD. Bands change once a year.
+- Everyone is full time (no worker type yet). Pay is in USD. Bands change once a year.
+- The simulator uses teams and orgs internally to decide job mix, growth and reorgs, but no org code is exported. Reports use the leader hierarchy only.
+- The CEO and VPs never leave, so level-2 trees are continuous.
 - Lateral transfers and internal applications are for ICs only; people become managers only through succession or span growth.
 - Growth reqs are opened to track a company headcount target, so hiring follows `params.GROWTH_BY_YEAR`.
 - Recruiter and interviewer workloads are not capped.

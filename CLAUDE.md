@@ -10,7 +10,8 @@ Read `PROJECT_PLAN.md` (scope, principles, sequencing), `README.md`, and `docs/S
 
 ## Rules that bite
 - One layer at a time. Layer N+1 starts only when layer N acceptance tests pass.
-- `employment_event` is truth; `employee_snapshot_monthly` is derived. Join the org tree on date (`valid_from`/`valid_to`), never on id alone.
+- `employment_event` is truth; `reporting_chain` and `employee_snapshot_monthly` are derived. Join chains on date (`valid_from`/`valid_to`), never on id alone.
+- There are no org codes. Anchor every group on a leader: `org_chain like '%.alias.%'` (dots on both sides) or `list_contains(chain_ids, id)`.
 - `metadata/` is the source of truth for what tables, columns and numbers mean. Never hand-edit `docs/Synthetic_Talent_Lifecycle_Schema.md`; edit `metadata/` and re-render.
 - When data changes on purpose, run `render_docs --facts`, review every difference, then update `expected` in `metadata/facts.yaml`. Don't bulk-copy live values without reviewing them.
 - Changing anything under PLANTED SIGNALS in `src/people_ai/synthetic/params.py` means updating `metadata/facts.yaml` and `tests/test_planted_signals.py` in the same commit.

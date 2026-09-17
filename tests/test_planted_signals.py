@@ -8,7 +8,7 @@ def vol_rate(q, where_employee, year):
     """Voluntary exits per average month-end active head, for a population defined on the snapshot."""
     return q(f"""
         with pop as (
-            select s.snapshot_date, s.employee_id, s.org_unit_id from employee_snapshot_monthly s
+            select s.snapshot_date, s.employee_id from employee_snapshot_monthly s
             where s.employment_status = 'active' and year(s.snapshot_date) = {year} and ({where_employee})),
         exits as (
             select count(*) n from termination t
@@ -18,15 +18,12 @@ def vol_rate(q, where_employee, year):
         select (select n from exits) / (select count(*) / 12.0 from pop)""")
 
 
-PLATFORM = """(select o3.parent_org_unit_id from dim_org_unit o4 join dim_org_unit o3
-               on o3.org_unit_id = o4.parent_org_unit_id and s.snapshot_date between o3.valid_from and o3.valid_to
-               where o4.org_unit_id = s.org_unit_id and o4.org_level = 4 and s.snapshot_date between o4.valid_from and o4.valid_to)
-              = (select org_unit_id from dim_org_unit where org_unit_name = 'Platform')"""
+PLATFORM = "list_contains(s.chain_ids, (select user_id from demo_user where persona = 'executive_platform'))"
 
 
 def test_s1_platform_attrition_spikes_in_2024(q):
     platform_2024 = vol_rate(q, PLATFORM, 2024)
-    rest_2024 = vol_rate(q, f"not coalesce({PLATFORM}, false)", 2024)
+    rest_2024 = vol_rate(q, f"not {PLATFORM}", 2024)
     platform_2022 = vol_rate(q, PLATFORM, 2022)
     assert platform_2024 > 1.4 * rest_2024
     assert platform_2024 > 1.4 * platform_2022

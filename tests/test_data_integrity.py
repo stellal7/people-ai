@@ -4,6 +4,7 @@ Regenerating the data must never silently break these.
 """
 END = "date '2025-12-31'"
 START = "date '2021-01-01'"
+LEVELS = [f"org_lvl_{i}" for i in range(1, 9)]
 
 
 # --- the four checks from PROJECT_PLAN layer 1 --------------------------------------------------------
@@ -53,11 +54,11 @@ def test_snapshot_matches_state_derived_from_events(q):
     mismatches = q("""
         with months as (select last_day(cast(m as date)) as d from range(date '2021-01-01', date '2026-01-01', interval 1 month) t(m)),
         from_events as (
-            select m.d as snapshot_date, e.employee_id, e.org_unit_id, e.manager_employee_id, e.employment_status
+            select m.d as snapshot_date, e.employee_id, e.job_id, e.manager_employee_id, e.employment_status
             from months m join employment_event e on e.effective_date <= m.d
             qualify row_number() over (partition by m.d, e.employee_id order by e.effective_date desc) = 1),
         expected as (select * from from_events where employment_status in ('active', 'leave')),
-        actual as (select snapshot_date, employee_id, org_unit_id, manager_employee_id, employment_status
+        actual as (select snapshot_date, employee_id, job_id, manager_employee_id, employment_status
                    from employee_snapshot_monthly)
         select (select count(*) from (select * from expected except select * from actual))
              + (select count(*) from (select * from actual except select * from expected))""")
@@ -102,31 +103,79 @@ def test_rehires_keep_employee_id_and_update_hire_dates(q):
                                             where e.employee_id = emp.employee_id and e.event_type in ('hire', 'rehire'))""") == 0
 
 
-# --- org tree and reporting lines --------------------------------------------------------------------------
+# --- reporting chain (the leader hierarchy) --------------------------------------------------------------
 
-def test_org_versions_do_not_overlap(q):
+def test_chain_rows_are_internally_consistent(q):
+    """The chain ends with the employee, its second-to-last link is the manager, and the string, list and level columns agree."""
+    self_level = "[" + ", ".join(LEVELS) + "][depth]"
+    manager_level = "[" + ", ".join(LEVELS) + "][depth - 1]"
+    assert q(f"""
+        select count(*) from reporting_chain
+        where len(chain_ids) <> depth
+           or chain_ids[depth] <> employee_id
+           or {self_level} <> alias
+           or (depth = 1) <> (manager_employee_id is null)
+           or (depth > 1 and (chain_ids[depth - 1] <> manager_employee_id or {manager_level} <> manager_alias))
+           or org_chain <> '.' || concat_ws('.', {", ".join(LEVELS)}) || '.'""") == 0
+
+
+def test_chain_levels_hold_the_aliases_of_the_chain_ids(q):
+    assert q(f"""
+        with levels as (select c.*, unnest(range(1, c.depth + 1)) as k from reporting_chain c)
+        select count(*) from levels x join employee e on e.employee_id = x.chain_ids[x.k]
+        where e.alias <> [{", ".join("x." + c for c in LEVELS)}][x.k]""") == 0
+
+
+def test_chain_versions_do_not_overlap_and_only_cover_employment(q):
     assert q("""
-        select count(*) from dim_org_unit a join dim_org_unit b
-          on a.org_unit_id = b.org_unit_id and a.valid_from < b.valid_from and a.valid_to >= b.valid_from""") == 0
-
-
-def test_every_event_references_an_org_unit_valid_on_that_date(q):
+        select count(*) from reporting_chain a join reporting_chain b
+          on a.employee_id = b.employee_id and a.valid_from < b.valid_from and a.valid_to >= b.valid_from""") == 0
     assert q("""
-        select count(*) from employment_event e
-        where not exists (select 1 from dim_org_unit o where o.org_unit_id = e.org_unit_id
-                          and e.effective_date between o.valid_from and o.valid_to)""") == 0
+        with months as (select distinct snapshot_date as d from employee_snapshot_monthly)
+        select count(*) from months m join reporting_chain c on m.d between c.valid_from and c.valid_to
+        where not exists (select 1 from employee_snapshot_monthly s where s.snapshot_date = m.d and s.employee_id = c.employee_id)""") == 0
 
 
-def test_team_19_changes_parent_org_in_reorg_1(q):
-    parent = lambda d: q(f"select parent_org_unit_id from dim_org_unit where org_unit_id = 19 and date '{d}' between valid_from and valid_to")
-    assert q("select org_level from dim_org_unit where org_unit_id = 19 limit 1") == 4
-    assert parent("2023-03-31") != parent("2023-04-30")
-
-
-def test_reorg_2_creates_a_new_org_with_moved_teams(q):
+def test_chain_is_manager_chain_plus_self(q):
     assert q("""
-        select count(*) from dim_org_unit n join dim_org_unit t on t.parent_org_unit_id = n.org_unit_id
-        where n.org_unit_name = 'Applied AI' and n.valid_from = date '2024-09-01' and t.valid_from = date '2024-09-01'""") == 2
+        select count(*) from employee_snapshot_monthly s
+        join employee_snapshot_monthly m on m.snapshot_date = s.snapshot_date and m.employee_id = s.manager_employee_id
+        where s.chain_ids <> list_append(m.chain_ids, s.employee_id)""") == 0
+    assert q("select max(n) from (select count(*) n from employee_snapshot_monthly where depth = 1 group by snapshot_date)") == 1
+
+
+def test_like_filter_on_org_chain_matches_list_filter(q):
+    """Delimited aliases make `org_chain LIKE '%.alias.%'` exact: no partial matches."""
+    assert q("""
+        with leaders as (select distinct manager_employee_id as id, manager_alias as alias from employee_snapshot_monthly
+                         where snapshot_date = date '2025-12-31' and manager_employee_id is not null),
+        s as (select * from employee_snapshot_monthly where snapshot_date = date '2025-12-31')
+        select count(*) from leaders l
+        where (select count(*) from s where s.org_chain like '%.' || l.alias || '.%')
+           <> (select count(*) from s where list_contains(s.chain_ids, l.id))""") == 0
+
+
+def test_reorg_1_moves_a_whole_team_to_another_director(q):
+    assert q("select count(*) from employment_event where effective_date = date '2023-04-01' and event_reason = 'reorg'") == 1
+    lead = q("select employee_id from employment_event where effective_date = date '2023-04-01' and event_reason = 'reorg'")
+    under_lead = f"""from employee_snapshot_monthly a join employee_snapshot_monthly b using (employee_id)
+                     where a.snapshot_date = date '2023-03-31' and b.snapshot_date = date '2023-04-30'
+                       and list_contains(a.chain_ids, {lead}) and list_contains(b.chain_ids, {lead})"""
+    moved = q(f"select count(*) {under_lead}")
+    assert moved > 5
+    assert q(f"select count(*) {under_lead} and a.org_lvl_3 <> b.org_lvl_3 and a.org_lvl_2 = b.org_lvl_2") == moved
+
+
+def test_reorg_2_promotes_a_new_director_over_team_leads(q):
+    director = q("""select employee_id from employment_event
+                    where effective_date = date '2024-09-01' and event_type = 'promotion' and event_reason = 'reorg'""")
+    depth_on = lambda d: q(f"select depth from employee_snapshot_monthly where snapshot_date = date '{d}' and employee_id = {director}")
+    assert (depth_on("2024-08-31"), depth_on("2024-09-30")) == (4, 3)
+    leads = q(f"""
+        select count(*) from employee_snapshot_monthly s
+        where s.snapshot_date = date '2024-09-30' and s.manager_employee_id = {director}
+          and exists (select 1 from employee_snapshot_monthly r where r.snapshot_date = s.snapshot_date and r.manager_employee_id = s.employee_id)""")
+    assert leads >= 2
 
 
 def test_managers_are_employed_and_only_the_ceo_has_none(q):
@@ -138,26 +187,22 @@ def test_managers_are_employed_and_only_the_ceo_has_none(q):
     assert q("select max(n) from (select count(*) n from employee_snapshot_monthly where manager_employee_id is null group by snapshot_date)") == 1
 
 
-def test_reporting_lines_have_no_cycles_and_bounded_depth(con):
-    for (d,) in con.execute("select distinct snapshot_date from employee_snapshot_monthly where month(snapshot_date) in (6, 12)").fetchall():
-        mgr = dict(con.execute("select employee_id, manager_employee_id from employee_snapshot_monthly where snapshot_date = ?", [d]).fetchall())
-        for emp in mgr:
-            depth, cur = 0, emp
-            while mgr.get(cur) is not None:
-                cur, depth = mgr[cur], depth + 1
-                assert depth <= 7, f"reporting chain too deep or cyclic for {emp} on {d}"
-
-
 def test_span_of_control_is_realistic(q):
     avg_span = q("""select avg(n) from (select manager_employee_id, count(*) n from employee_snapshot_monthly
                     where snapshot_date = date '2025-12-31' and manager_employee_id is not null group by 1)""")
     assert 4 <= avg_span <= 10
 
 
+def test_ceo_and_vps_never_change(q):
+    assert q("select count(distinct org_lvl_1) from employee_snapshot_monthly") == 1
+    assert q("""select count(*) from (select org_lvl_2 from employee_snapshot_monthly where depth >= 2
+                group by 1 having min(snapshot_date) <> date '2021-01-31' or max(snapshot_date) <> date '2025-12-31')""") == 0
+
+
 # --- authorization table ------------------------------------------------------------------------------------
 
 def test_role_holders_are_employed_throughout(q):
-    assert q(f"""
+    assert q("""
         select count(*) from user_role r
         join (select distinct snapshot_date from employee_snapshot_monthly) m
           on m.snapshot_date between r.valid_from and r.valid_to
@@ -169,8 +214,14 @@ def test_role_intervals_are_valid_and_do_not_overlap(q):
     assert q("select count(*) from user_role where valid_from > valid_to") == 0
     assert q("""
         select count(*) from user_role a join user_role b
-          on a.user_id = b.user_id and a.role = b.role and a.scope_org_unit_id is not distinct from b.scope_org_unit_id
+          on a.user_id = b.user_id and a.role = b.role and a.scope_leader_employee_id is not distinct from b.scope_leader_employee_id
          and a.valid_from < b.valid_from and a.valid_to >= b.valid_from""") == 0
+
+
+def test_role_scopes_point_at_the_right_leader(q):
+    assert q("""select count(*) from user_role
+                where (role in ('manager', 'executive') and scope_leader_employee_id <> user_id)
+                   or ((role = 'people_analytics') <> (scope_leader_employee_id is null))""") == 0
 
 
 def test_manager_role_matches_reporting_lines(q):
@@ -185,13 +236,21 @@ def test_manager_role_matches_reporting_lines(q):
              + (select count(*) from (select * from granted except select * from actual))""") == 0
 
 
-def test_every_org_has_exactly_one_hrbp(q):
+def test_every_director_has_exactly_one_hrbp(q):
+    """Directors are depth-3 people who manage others; each HRBP grant is scoped to one of them."""
     assert q("""
-        with months as (select distinct snapshot_date from employee_snapshot_monthly)
-        select count(*) from months m join dim_org_unit o
-          on o.org_level = 3 and m.snapshot_date between o.valid_from and o.valid_to
-        where (select count(*) from user_role r where r.role = 'hrbp' and r.scope_org_unit_id = o.org_unit_id
-               and m.snapshot_date between r.valid_from and r.valid_to) <> 1""") == 0
+        with directors as (
+            select s.snapshot_date, s.employee_id from employee_snapshot_monthly s
+            where s.depth = 3 and exists (select 1 from employee_snapshot_monthly r
+                                          where r.snapshot_date = s.snapshot_date and r.manager_employee_id = s.employee_id))
+        select count(*) from directors d
+        where (select count(*) from user_role r where r.role = 'hrbp' and r.scope_leader_employee_id = d.employee_id
+               and d.snapshot_date between r.valid_from and r.valid_to) <> 1""") == 0
+    assert q("""
+        select count(*) from user_role r join (select distinct snapshot_date from employee_snapshot_monthly) m
+          on r.role = 'hrbp' and m.snapshot_date between r.valid_from and r.valid_to
+        where not exists (select 1 from employee_snapshot_monthly s where s.snapshot_date = m.snapshot_date
+                          and s.employee_id = r.scope_leader_employee_id and s.depth = 3)""") == 0
 
 
 def test_demo_personas_exist(q):
