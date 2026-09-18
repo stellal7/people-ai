@@ -45,6 +45,40 @@ TABLE_REFERENCE = re.compile(r"\b(?:from|join)\s+([A-Za-z_][A-Za-z0-9_]*)", re.I
 CTE_NAME = re.compile(r"(?:with|,)\s+([A-Za-z_][A-Za-z0-9_]*)\s+as\s*\(", re.I)
 
 
+def referenced_tables(con, statement):
+    """
+    The tables a statement actually reads, from DuckDB's own parser.
+
+    Regex guessing mistook CTE names for tables; the parser lists both, and the CTE names can be subtracted.
+    Returns None when the statement cannot be parsed, so the caller can fall back.
+    """
+    try:
+        parsed = json.loads(con.execute("select json_serialize_sql(?)", [statement]).fetchone()[0])
+    except Exception:
+        return None
+    if parsed.get("error"):
+        raise ValueError(f"that is not valid SQL: {parsed.get('error_message', 'parse error')}")
+
+    def walk(node, tables, ctes):
+        if isinstance(node, dict):
+            if node.get("type") == "BASE_TABLE" and node.get("table_name"):
+                tables.add(node["table_name"].lower())
+            cte_map = node.get("cte_map")
+            if isinstance(cte_map, dict):
+                for entry in cte_map.get("map") or []:
+                    if isinstance(entry, dict) and entry.get("key"):
+                        ctes.add(entry["key"].lower())
+            for value in node.values():
+                walk(value, tables, ctes)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, tables, ctes)
+        return tables, ctes
+
+    tables, ctes = walk(parsed, set(), set())
+    return tables - ctes
+
+
 # ----------------------------------------------------------------------------------------------- plumbing
 def read_connection():
     return duckdb.connect(str(DB_PATH), read_only=True)
@@ -114,18 +148,43 @@ def list_metrics(user_id=None):
         return guard.done({"metrics": metrics}, rows=len(metrics))
 
 
+def _resolve_term(term):
+    """
+    Map what someone typed to something in the registry or catalog.
+
+    People ask for "regretted attrition" or "org_chain", not "attrition" or "reporting_chain.org_chain".
+    """
+    cleaned = " ".join(str(term).strip().lower().replace("-", " ").split())
+    if "." in cleaned:
+        return cleaned.replace(" ", "")
+    names = [m.name for m in sem.REGISTRY.metrics] + [t.name for t in CATALOG.tables]
+    underscored = cleaned.replace(" ", "_")
+    for candidate in (underscored, cleaned):
+        if candidate in names:
+            return candidate
+    for name in names:                                   # "regretted attrition" -> attrition
+        if name in underscored or underscored in name:
+            return name
+    for table in CATALOG.tables:                         # a bare column name -> table.column
+        for column in table.columns:
+            if column.name == underscored:
+                return f"{table.name}.{column.name}"
+    return underscored
+
+
 def get_definition(term, user_id=None):
     """The written definition of a metric, a table or a column. The agent never invents one."""
     with _guard("get_definition", user_id, {"term": term}) as guard:
+        name = _resolve_term(term)
         try:
-            metric = sem.get_definition(term)
+            metric = sem.get_definition(name)
             return guard.done({"kind": "metric", "name": metric.name, "title": metric.title,
                                "definition": metric.definition, "grain": metric.grain, "period": metric.period,
                                "breakdowns": list(metric.breakdowns), "edge_cases": list(metric.edge_cases),
                                "leader_included": metric.leader_included, "sensitivity": metric.sensitivity})
         except KeyError:
             pass
-        table_name, _, column_name = term.partition(".")
+        table_name, _, column_name = name.partition(".")
         try:
             table = CATALOG.table(table_name)
         except StopIteration:
@@ -149,11 +208,12 @@ def get_metric(name, user_id, scope=None, by=None, as_of=None, start=None, end=N
         con = read_connection()
         try:
             metric = sem.get_definition(name)
-            on = as_of or end or (f"{cycle}-10-15" if cycle else None) or latest_date(con)
-            access = resolve_scope(con, user_id, on)
+            today = latest_date(con)
+            on = as_of or end or (f"{cycle}-10-15" if cycle else None) or today
+            access = resolve_scope(con, user_id, today)     # who you are today, even when asking about history
             needed = "individual" if options.get("detail") else "aggregate"
             access.require(metric.sensitivity, needed)
-            alias = check_scope(con, access, scope, on)
+            alias = check_scope(con, access, scope, today, fallback=on)
 
             notes = []
             floor_min = access.min_group(metric.sensitivity)
@@ -194,10 +254,11 @@ def describe_leader(alias, user_id, as_of=None):
     with _guard("describe_leader", user_id, {"alias": alias, "as_of": as_of}) as guard:
         con = read_connection()
         try:
-            on = as_of or latest_date(con)
-            access = resolve_scope(con, user_id, on)
+            today = latest_date(con)
+            on = as_of or today
+            access = resolve_scope(con, user_id, today)
             access.require("people", "aggregate")
-            leader = check_scope(con, access, alias, on)
+            leader = check_scope(con, access, alias, today, fallback=on)
             scope = h.resolve(con, leader, on)
             name = con.execute("select legal_name from employee where employee_id = ?", [scope.leader_id]).fetchone()[0]
             chain = list(h.chain_of(con, leader, on)["alias"])
@@ -216,8 +277,9 @@ def search_people(query, user_id, as_of=None, limit=20):
     with _guard("search_people", user_id, {"query": query, "as_of": as_of}) as guard:
         con = read_connection()
         try:
-            on = as_of or latest_date(con)
-            access = resolve_scope(con, user_id, on)
+            today = latest_date(con)
+            on = as_of or today
+            access = resolve_scope(con, user_id, today)
             access.require("people", "individual")
             frame = con.execute(f"""
                 select c.alias, e.legal_name, c.depth, c.manager_alias
@@ -272,6 +334,23 @@ def scoped_views(con, access: Access, as_of):
     return sorted(exposed)
 
 
+def scope_notes(access):
+    """What the caller's own view leaves out, so an answer can say so instead of looking complete."""
+    notes = []
+    if not access.sees_everything:
+        notes.append(f"limited to {' and '.join(access.scope_aliases)}'s organisation")
+    for data_class, label in (("compensation", "pay"), ("performance", "ratings")):
+        floor = access.floor(data_class)
+        if floor == "direct_reports":
+            notes.append(f"{label} rows cover your direct reports only")
+        elif floor in ("aggregate", "none"):
+            notes.append(f"individual {label} rows are not available to you")
+    if access.floor("recruiting") != "individual":
+        notes.append("recruiting rows are not available to you; use the recruiting metrics")
+    notes.append("engagement answers come from the engagement metric, which suppresses small groups")
+    return notes
+
+
 def available_tables(user_id, as_of=None):
     """
     The tables this caller may query, with their columns.
@@ -294,7 +373,7 @@ def available_tables(user_id, as_of=None):
         con.close()
 
 
-def validate_sql(sql, exposed):
+def validate_sql(sql, exposed, con=None):
     """One read-only statement, over the tables this caller was given. Anything else is refused."""
     text = re.sub(r"/\*.*?\*/", " ", re.sub(r"--[^\n]*", " ", sql), flags=re.S).strip().rstrip(";").strip()
     if ";" in text:
@@ -307,7 +386,9 @@ def validate_sql(sql, exposed):
         raise ValueError("file and system functions are not allowed")
     if QUALIFIED.search(text):
         raise ValueError("schema-qualified names are not allowed; query the tables you were given by name")
-    referenced = {t.lower() for t in TABLE_REFERENCE.findall(text)} - {c.lower() for c in CTE_NAME.findall(text)}
+    referenced = referenced_tables(con, text) if con is not None else None
+    if referenced is None:              # parser unavailable: fall back to reading the text
+        referenced = {t.lower() for t in TABLE_REFERENCE.findall(text)} - {c.lower() for c in CTE_NAME.findall(text)}
     unknown = referenced - set(exposed)
     if unknown:
         raise ValueError(f"not available to you: {sorted(unknown)}. Tables you can query: {exposed}. "
@@ -323,16 +404,16 @@ def run_readonly_sql(sql, user_id, as_of=None, limit=ROW_LIMIT):
     with _guard("run_readonly_sql", user_id, {"sql": sql[:2000], "as_of": as_of}) as guard:
         catalog_con = read_connection()
         try:
-            on = as_of or latest_date(catalog_con)
-            access = resolve_scope(catalog_con, user_id, on)
+            today = latest_date(catalog_con)
+            access = resolve_scope(catalog_con, user_id, today)
         finally:
             catalog_con.close()
 
         con = duckdb.connect()
         try:
             con.execute(f"attach '{DB_PATH}' as source (read_only)")
-            exposed = scoped_views(con, access, on)
-            statement = validate_sql(sql, exposed)
+            exposed = scoped_views(con, access, today)
+            statement = validate_sql(sql, exposed, con=con)
             timer = threading.Timer(SQL_TIMEOUT_SECONDS, con.interrupt)
             timer.start()
             try:
@@ -342,7 +423,8 @@ def run_readonly_sql(sql, user_id, as_of=None, limit=ROW_LIMIT):
             truncated = len(frame) > limit
             frame = frame.head(limit)
             result = {"rows": _frame_rows(frame), "columns": list(frame.columns), "row_count": len(frame),
-                      "truncated": truncated, "tables_available": exposed, "access": access.describe()}
+                      "truncated": truncated, "tables_available": exposed, "access": access.describe(),
+                      "scope_notes": scope_notes(access)}
             return guard.done(result, rows=len(frame), scope=",".join(access.scope_aliases) or "company",
                               note="truncated" if truncated else None)
         finally:

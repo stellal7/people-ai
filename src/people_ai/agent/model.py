@@ -22,10 +22,16 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
+    cache_written_tokens: int = 0
+
+    @property
+    def total_input(self):
+        """Tokens written to the cache are billed too, and don't appear in input_tokens."""
+        return self.input_tokens + self.cached_tokens + self.cache_written_tokens
 
     def __str__(self):
-        return (f"{self.model}: {self.input_tokens} in ({self.cached_tokens} cached), "
-                f"{self.output_tokens} out")
+        return (f"{self.model}: {self.total_input} in ({self.cached_tokens} cache read, "
+                f"{self.cache_written_tokens} cache write), {self.output_tokens} out")
 
 
 class Claude:
@@ -63,7 +69,8 @@ class Claude:
             raise ModelError("no text block in the response")
         usage = Usage(model=model, input_tokens=response.usage.input_tokens,
                       output_tokens=response.usage.output_tokens,
-                      cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0)
+                      cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                      cache_written_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0)
         try:
             return json.loads(text), usage
         except json.JSONDecodeError as error:

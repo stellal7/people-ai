@@ -46,6 +46,7 @@ def answer(question, context, client=None, model=ANSWER_MODEL, limit=200):
             result = tools.run_readonly_sql(previous, user_id=context.user_id, as_of=context.as_of, limit=limit)
             return {"rows": result["rows"], "columns": result["columns"], "sql": previous,
                     "rationale": written["rationale"], "truncated": result["truncated"], "blocked": None,
+                    "scope_notes": result.get("scope_notes", []),
                     "attempts": attempts + [previous], "usages": usages}
         except ValueError as failure:             # refused by the guard, or invalid SQL
             attempts.append(previous)

@@ -246,7 +246,18 @@ Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_te
 
 **Goal:** know whether the agent is right before anyone relies on it.
 
-**Status:** 52 golden questions across the three tiers, covering every metric, six personas, both reorg dates, ambiguous phrasing and 11 adversarial authorization attempts; `evals/taxonomy.md` with 14 failure categories; `people_ai/evals/harness.py` scores and tags failures, and `evals/runner.py` is the CLI. Scoring is tested with fabricated answers, so the harness is trustworthy before it is pointed at the model. Data-tier answers are checked against the verified facts in `metadata/facts.yaml`.
+**Status:** 52 golden questions across the three tiers, covering every metric, six personas, both reorg dates, ambiguous phrasing and 10 adversarial authorization attempts; `evals/taxonomy.md` with 14 failure categories; `people_ai/evals/harness.py` scores and tags failures, and `evals/runner.py` is the CLI. Scoring is tested with fabricated answers, so the harness is trustworthy before it is pointed at the model. Data-tier answers are checked against the verified facts in `metadata/facts.yaml`.
+
+**First measured run (2026-09-18, execution + data tiers):** 55% → **90%** after fixing what the failures exposed. Execution **96.6%** (target ≥95%, met), data **72.7%** (target ≥90%, not met). No authorization leaks. Results are committed under `evals/results/`. Answers are sampled, so a run varies by a question or two; treat single-run differences under ~5% as noise.
+
+**What the first run exposed** (all fixed, each with a test):
+- Access was resolved as of the date being *asked about*, so nobody could query history from before they joined. Grants are now resolved as of today, and the question's date only selects the data.
+- A leader who has left could not be named at all, so "cmann2's team" failed instead of meaning the team they had.
+- The router passed arguments a metric did not accept (`TypeError` instead of an answer), and could not look up a definition unless the term was spelled exactly as the registry spells it.
+- The SQL guard's table allowlist used a regex and mistook CTE names for tables; it now uses DuckDB's parser.
+- The SQL prompt listed columns but never said what one row *meant*, or what values a column could hold, so the model twice concluded data was missing when it was there.
+
+**Still open:** three data-tier questions where the model's SQL is subtly wrong (a count of "more than one application" candidates, a reorg comparison, a cancellation-reason count). Data accuracy is the gate for 4b.
 
 **Deliverables:**
 

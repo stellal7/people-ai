@@ -18,3 +18,33 @@ How this data works:
 Write the simplest statement that answers the question, alias columns readably, and order the result the way a person would want to read it. Return at most a few hundred rows: aggregate rather than dumping rows.
 
 In `rationale`, say in one sentence what the statement counts and over what period, so the answer can be checked without reading SQL.
+
+## Worked examples
+
+These show the shapes that are easy to get wrong. Read the allowed values listed under each table before deciding that something is not recorded.
+
+**Counting by a recorded reason** — "how many roles were cancelled because the business changed?" The reason is a column value, not something to infer from dates:
+
+```sql
+select count(*) as requisitions
+from requisition
+where close_reason = 'cancelled_business_change'
+```
+
+**Comparing two dates to find a change** — "how many people changed manager between two month ends?" Join the snapshot to itself on employee, and compare the column that changed. Do not filter either side by tenure or status first: people present on only one date are not changes, and the join already excludes them:
+
+```sql
+select count(*) as people
+from employee_snapshot_monthly a
+join employee_snapshot_monthly b using (employee_id)
+where a.snapshot_date = date '2024-05-31'
+  and b.snapshot_date = date '2024-06-30'
+  and a.manager_alias is distinct from b.manager_alias
+```
+
+**Counting the "more than one" case** — "how many people have left more than once?" Group by the person, count the rows, and filter on the count. Count rows, not distinct values of something else, unless the question says so:
+
+```sql
+select count(*) as people
+from (select employee_id from termination group by employee_id having count(*) > 1)
+```

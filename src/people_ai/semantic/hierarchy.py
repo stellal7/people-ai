@@ -68,7 +68,12 @@ def resolve(con, scope, as_of, include_leader=True, fallback=None) -> Scope:
                               where {column} = ? and {date_literal(when)} between valid_from and valid_to""", [scope]).fetchone()
         if row:
             return Scope(leader_id=row[0], alias=row[1], depth=row[2], include_leader=include_leader)
-    raise ScopeError(f"{scope!r} was not employed on {as_date(as_of)}")
+    # someone who has left: "cmann2's team" still means the team they had, so use their last chain version
+    row = con.execute(f"""select employee_id, alias, depth from reporting_chain
+                          where {column} = ? order by valid_from desc limit 1""", [scope]).fetchone()
+    if row:
+        return Scope(leader_id=row[0], alias=row[1], depth=row[2], include_leader=include_leader)
+    raise ScopeError(f"{scope!r} is not an employee in this dataset")
 
 
 def tree(con, leader, as_of, include_leader=True):

@@ -140,12 +140,15 @@ def resolve_scope(con, user_id, as_of, policy=POLICY) -> Access:
     return Access(user_id=int(user_id), as_of=when, grants=grants, policy=policy)
 
 
-def check_scope(con, access: Access, scope, as_of=None):
+def check_scope(con, access: Access, scope, as_of=None, fallback=None):
     """
     Validate a requested scope against the user's grants. Returns the alias to use (None means the company).
 
     A scope the user may not see is an error, never an empty result: silently returning zero rows would let a
     manager probe another organization.
+
+    Grants are checked as of today, not as of the date being asked about: you may look at the history of the
+    organization you lead today, and losing a role removes access to its past as well as its present.
     """
     when = h.as_date(as_of or access.as_of)
     if scope is None:
@@ -154,7 +157,7 @@ def check_scope(con, access: Access, scope, as_of=None):
         raise AuthorizationError(
             f"user {access.user_id} cannot see the whole company; ask about "
             f"{' or '.join(access.scope_aliases) or 'nothing they have access to'}")
-    requested = h.resolve(con, scope, when)
+    requested = h.resolve(con, scope, when, fallback=fallback)
     if access.sees_everything:
         return requested.alias
     for grant in access.grants:

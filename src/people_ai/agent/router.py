@@ -42,7 +42,21 @@ def route(question, context, client=None, model=ROUTER_MODEL):
     return decision, usage
 
 
-def metric_arguments(decision):
-    """The subset of a decision that get_metric accepts."""
-    keys = ("scope", "by", "as_of", "start", "end", "cycle", "kind", "candidate_type")
+def metric_arguments(decision, metric=None):
+    """
+    The arguments this metric actually accepts.
+
+    The router may offer `kind` or `candidate_type` for a metric that has neither; passing them through would be
+    a TypeError rather than an answer, so each metric's declared parameters decide what survives.
+    """
+    from people_ai.semantic import metrics as sem
+
+    keys = ["scope", "by", "as_of", "start", "end", "cycle", "kind", "candidate_type"]
+    name = metric or decision.get("metric")
+    if name:
+        try:
+            declared = {p["name"] for p in sem.REGISTRY.get(name).parameters} | {"scope", "by"}
+            keys = [key for key in keys if key in declared]
+        except KeyError:
+            pass
     return {key: decision.get(key) for key in keys if decision.get(key) not in (None, [], "")}

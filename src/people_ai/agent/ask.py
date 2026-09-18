@@ -52,7 +52,14 @@ def ask(question, user_id, as_of=None, client=None, router_client=None, context=
     """Route one question and answer it through the governed tools."""
     client = client or Claude()
     router_client = router_client or client
-    context = context or context_module.build(user_id, as_of)
+    try:
+        if context is None:
+            context = context_module.build(user_id, as_of, question=question)
+        elif not context.mentioned:
+            context = context_module.with_question(context, question)
+    except AuthorizationError as error:
+        # someone with no grants at all: a refusal, like any other, and the model is never called
+        return Answer(question=question, route="out_of_scope", refused=True, refusal_reason=str(error))
 
     try:
         decision, routing_usage = router_module.route(question, context, client=router_client, model=ROUTER_MODEL)
@@ -78,7 +85,7 @@ def ask(question, user_id, as_of=None, client=None, router_client=None, context=
             if not name:
                 answer.refused, answer.refusal_reason = True, "the router chose a metric route without a metric"
                 return answer
-            result = tools.get_metric(name, user_id=user_id, **router_module.metric_arguments(decision))
+            result = tools.get_metric(name, user_id=user_id, **router_module.metric_arguments(decision, name))
             answer.rows = result["rows"]
             answer.metric = name
             answer.definition = result["definition"]
@@ -97,6 +104,7 @@ def ask(question, user_id, as_of=None, client=None, router_client=None, context=
                 answer.refused, answer.refusal_reason = True, written["blocked"]
                 return answer
             answer.rows = written["rows"]
+            answer.notes += written.get("scope_notes", [])
             if written.get("truncated"):
                 answer.notes.append("result truncated; ask for an aggregate if you need the whole set")
             if len(written["attempts"]) > 1:
