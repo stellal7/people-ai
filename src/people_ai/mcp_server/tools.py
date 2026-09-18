@@ -272,6 +272,28 @@ def scoped_views(con, access: Access, as_of):
     return sorted(exposed)
 
 
+def available_tables(user_id, as_of=None):
+    """
+    The tables this caller may query, with their columns.
+
+    The agent's SQL prompt is built from this, so the model is never told about tables it cannot use.
+    """
+    catalog_con = read_connection()
+    try:
+        on = as_of or latest_date(catalog_con)
+        access = resolve_scope(catalog_con, user_id, on)
+    finally:
+        catalog_con.close()
+    con = duckdb.connect()
+    try:
+        con.execute(f"attach '{DB_PATH}' as source (read_only)")
+        exposed = scoped_views(con, access, on)
+        return {name: [f"{row[0]} {row[1]}" for row in con.execute(f"describe {name}").fetchall()]
+                for name in exposed}
+    finally:
+        con.close()
+
+
 def validate_sql(sql, exposed):
     """One read-only statement, over the tables this caller was given. Anything else is refused."""
     text = re.sub(r"/\*.*?\*/", " ", re.sub(r"--[^\n]*", " ", sql), flags=re.S).strip().rstrip(";").strip()

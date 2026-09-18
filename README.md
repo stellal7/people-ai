@@ -39,6 +39,32 @@ Metrics take dates, a leader alias, allowlisted breakdowns and named options, ne
 
 Six tools: `list_metrics`, `get_definition`, `get_metric`, `describe_leader`, `search_people`, `run_readonly_sql`. Each resolves the caller's grants from `user_role` on the date, checks the requested leader against them, applies the data-class floor from [metadata/access_policy.yaml](metadata/access_policy.yaml), and logs the call. Asking about someone else's organization is a refusal with a reason, never an empty table. See [docs/architecture.md](docs/architecture.md).
 
+## Asking a question in English (needs an API key)
+
+```bash
+cp .env.example .env     # set ANTHROPIC_API_KEY
+```
+
+```python
+from people_ai.agent.ask import ask
+
+answer = ask("What was voluntary attrition in 2024?", user_id=453)
+answer.rows        # [{'exits': 440, 'avg_headcount': 3974.4, 'attrition_pct': 11.1}]
+answer.definition  # the written definition that was applied
+answer.scope       # the leader tree it was computed for
+answer.notes       # suppression, truncation, low confidence
+```
+
+A cheap model (`claude-haiku-4-5`) routes the question to a metric, a definition, guarded SQL, or an honest "this data can't answer that". A strong model (`claude-opus-5`) writes SQL when no metric fits, with one repair attempt if the guard rejects it. Refusals come back as answers with reasons, not exceptions.
+
+## Evals
+
+```bash
+python evals/runner.py --tier execution,data
+```
+
+52 golden questions with known answers, scored in three tiers (did it take the right path, is the number right, would a person trust the answer), with every failure tagged from [evals/taxonomy.md](evals/taxonomy.md). Data-tier answers are checked against the verified facts, and 11 questions are adversarial attempts to see another leader's organization.
+
 ## Metadata is tested, not just written
 
 `metadata/tables.yaml` describes every table and column, and `metadata/facts.yaml` holds every number the docs quote with the SQL behind it. Tests check both against the data, and the schema doc is generated from them. If the data changes and the metadata doesn't, the build fails instead of the docs quietly going stale.
@@ -75,9 +101,9 @@ Acme Corp, January 2021 to December 2025:
 | 1 | Synthetic data + integrity tests | Done |
 | 2 | Semantic layer: 13 metrics, defined once and tested | Done |
 | 3 | Authorization + MCP server: 6 tools, per-caller views | Done |
-| 4 | Agent: routing, text-to-SQL, multi-step | Next |
+| 4 | Agent: routing + text-to-SQL (4a) | Done; multi-step (4b) next |
 | 5 | Skill: talent review drafting | |
-| 6 | Evals: golden set, three-tier scoring, failure taxonomy | |
+| 6 | Evals: 52 golden questions, three-tier scoring, failure taxonomy | Harness done; first scored run needs an API key |
 | 7 | Optional: Snowflake mirror + dashboard | |
 
 ## Repo layout

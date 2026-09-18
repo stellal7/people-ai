@@ -70,10 +70,15 @@ people_ai/
       server.py
       tools.py
     agent/                   # layer 4
-      router.py
-      text_to_sql.py
-      orchestrator.py
+      model.py               #   one JSON call to Claude, with the system prompt cached; stub for tests
+      context.py             #   what the model is told: caller access, metrics, tables they may query
+      router.py              #   cheap model: metric | definition | sql | out_of_scope
+      text_to_sql.py         #   strong model: one SELECT, one repair attempt
+      ask.py                 #   4a entry point: one answer shape with its provenance
+      orchestrator.py        #   4b: multi-step
       prompts/
+    evals/                   # layer 6 harness (the golden set and results live in evals/ at the repo root)
+      harness.py
     skills/                  # layer 5
       talent_review/
         SKILL.md
@@ -81,8 +86,8 @@ people_ai/
         checks.py
   evals/                     # layer 6
     golden/
-      questions.yaml
-    runner.py
+      questions.yaml         #   52 questions with known answers
+    runner.py                #   CLI over src/people_ai/evals/harness.py
     taxonomy.md
     results/
   tests/
@@ -194,9 +199,11 @@ Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_te
 - An executive requesting team-level engagement for a 4-person team gets a suppression notice.
 - Server runs standalone and can be exercised from the MCP inspector.
 
-### Layer 4: Agent
+### Layer 4: Agent (4a DONE, 2026-09-18; 4b to do)
 
 **Goal:** answer natural-language questions about people data, correctly, within the caller's scope. Build in two steps.
+
+**Status:** 4a is built. `agent/router.py` classifies on the cheap model (`claude-haiku-4-5`), `agent/text_to_sql.py` writes SQL on the strong model (`claude-opus-5`) with one repair attempt, and `agent/ask.py` returns one answer shape: rows, the definition applied, the scope, the SQL, and notes. Refusals, invalid arguments and model failures come back as answers, never exceptions. Model choice, effort and credentials are config (`config.py`, `.env`). Tests script the model, so they run without credentials; the live test and the eval runner need a key.
 
 **Step 4a, text-to-SQL over the semantic layer:**
 
@@ -235,9 +242,11 @@ Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_te
 - Given an HRBP user and an org, the agent produces a complete draft with every number traceable to a logged tool call, and the checks pass.
 - Given a manager user for a different org, the agent refuses with an authorization message.
 
-### Layer 6: Evaluation harness
+### Layer 6: Evaluation harness (harness DONE, 2026-09-18; first scored run needs credentials)
 
 **Goal:** know whether the agent is right before anyone relies on it.
+
+**Status:** 52 golden questions across the three tiers, covering every metric, six personas, both reorg dates, ambiguous phrasing and 11 adversarial authorization attempts; `evals/taxonomy.md` with 14 failure categories; `people_ai/evals/harness.py` scores and tags failures, and `evals/runner.py` is the CLI. Scoring is tested with fabricated answers, so the harness is trustworthy before it is pointed at the model. Data-tier answers are checked against the verified facts in `metadata/facts.yaml`.
 
 **Deliverables:**
 

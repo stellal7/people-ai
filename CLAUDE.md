@@ -20,5 +20,7 @@ Read `PROJECT_PLAN.md` (scope, principles, sequencing), `README.md`, and `docs/S
 - Metric callers pass dates, a leader alias, allowlisted breakdowns and named options. Never accept SQL from a caller.
 - Authorization comes from `user_role` (whose data, effective dated) and `metadata/access_policy.yaml` (which data class, at which level). Never enforce access in a prompt, and never widen scope in code.
 - A request outside the caller's scope is a refusal with a reason, never an empty result.
+- Model choice is config (`config.py`, `.env`): cheap model routes, strong model writes SQL and drafts. Structured output for every model call; the long stable prompt goes in the cached system block.
+- Agent tests script the model (`StubClaude`) so they run without credentials. Anything that calls the real API is marked `live` and skipped without a key. Eval runs cost money: ask before running one.
 - Synthetic only. Never add real people data. Never commit `.env`.
 - Commit messages: `layerN: what changed`.
