@@ -31,6 +31,14 @@ m.funnel_conversion("2025-01-01", "2025-12-31", by="source_channel", candidate_t
 
 Metrics take dates, a leader alias, allowlisted breakdowns and named options, never SQL. Definitions live in [metadata/metrics.yaml](metadata/metrics.yaml) and are published as [docs/metric_definitions.md](docs/metric_definitions.md).
 
+## The governed door
+
+```bash
+.venv/bin/python -m people_ai.mcp_server.server      # MCP server over stdio
+```
+
+Six tools: `list_metrics`, `get_definition`, `get_metric`, `describe_leader`, `search_people`, `run_readonly_sql`. Each resolves the caller's grants from `user_role` on the date, checks the requested leader against them, applies the data-class floor from [metadata/access_policy.yaml](metadata/access_policy.yaml), and logs the call. Asking about someone else's organization is a refusal with a reason, never an empty table. See [docs/architecture.md](docs/architecture.md).
+
 ## Metadata is tested, not just written
 
 `metadata/tables.yaml` describes every table and column, and `metadata/facts.yaml` holds every number the docs quote with the SQL behind it. Tests check both against the data, and the schema doc is generated from them. If the data changes and the metadata doesn't, the build fails instead of the docs quietly going stale.
@@ -66,8 +74,8 @@ Acme Corp, January 2021 to December 2025:
 |---|---|---|
 | 1 | Synthetic data + integrity tests | Done |
 | 2 | Semantic layer: 13 metrics, defined once and tested | Done |
-| 3 | Authorization + MCP server | Next |
-| 4 | Agent: routing, text-to-SQL, multi-step | |
+| 3 | Authorization + MCP server: 6 tools, per-caller views | Done |
+| 4 | Agent: routing, text-to-SQL, multi-step | Next |
 | 5 | Skill: talent review drafting | |
 | 6 | Evals: golden set, three-tier scoring, failure taxonomy | |
 | 7 | Optional: Snowflake mirror + dashboard | |

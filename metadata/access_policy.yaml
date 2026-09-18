@@ -1,0 +1,61 @@
+# Who may see what, by role and data class. Authorization is data, never prompt text.
+#
+# Two halves, and both are needed before a row is returned:
+#   1. WHOSE data: grants in the user_role table say which leader's tree a user may see, with dates.
+#      A manager sees their own tree, an HRBP the director's tree they cover, an executive their own tree,
+#      people analytics everything.
+#   2. WHICH data about them: this file, by data class (the sensitivity levels in tables.yaml).
+#
+# Floors:
+#   individual      rows about named people
+#   direct_reports  individual rows only for the user's own direct reports; aggregates for the rest of the tree
+#   aggregate       totals and averages only, subject to min_group
+#   none            not available at all
+#
+# People hold several roles at once, and the most permissive floor wins. A VP, for example, has an executive
+# grant over their tree and a manager grant because they have direct reports: they see the roster of their own
+# organization, pay only for the people reporting to them, and engagement only as suppressed aggregates.
+version: 1
+
+min_group:
+  engagement: 5
+  compensation: 5
+  performance: 5
+
+policy:
+  manager:
+    people: individual
+    compensation: direct_reports
+    performance: direct_reports
+    engagement: aggregate
+    recruiting: aggregate
+    candidate_pii: none
+    access_control: none
+    reference: individual
+  hrbp:
+    people: individual
+    compensation: individual
+    performance: individual
+    engagement: aggregate
+    recruiting: individual
+    candidate_pii: none
+    access_control: none
+    reference: individual
+  executive:
+    people: aggregate
+    compensation: aggregate
+    performance: aggregate
+    engagement: aggregate
+    recruiting: aggregate
+    candidate_pii: none
+    access_control: none
+    reference: individual
+  people_analytics:
+    people: individual
+    compensation: individual
+    performance: individual
+    engagement: aggregate
+    recruiting: individual
+    candidate_pii: individual
+    access_control: individual
+    reference: individual

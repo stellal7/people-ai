@@ -162,12 +162,15 @@ Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_te
 - `attrition` for 2024 reproduces the verified facts `voluntary_attrition_2024_pct` and `regretted_share_2024_pct` in `metadata/facts.yaml`.
 - No metric function accepts raw SQL from a caller.
 
-### Layer 3: Authorization + MCP server
+### Layer 3: Authorization + MCP server (DONE, 2026-09-18)
 
 **Goal:** one governed door to the data.
 
+**Status:** `access/authz.py` resolves grants from `user_role` on the date and floors from `metadata/access_policy.yaml`; `mcp_server/tools.py` enforces both and logs every call; `mcp_server/server.py` exposes six MCP tools over stdio. `run_readonly_sql` runs against per-caller views of the warehouse, so a manager and an HRBP query different tables. Decisions are written up in `docs/architecture.md`.
+
 **Deliverables:**
 
+- `metadata/access_policy.yaml`: the floor for each role and data class (`individual`, `direct_reports`, `aggregate`, `none`), reviewed like the other metadata. People hold several roles at once and the most permissive floor wins.
 - `access/authz.py`: `resolve_scope(user_id, as_of)` returning the employees the user may see (a leader's tree on the date), and the aggregation floor by data class (people, comp, performance, engagement). Rules from the schema doc:
   - Manager sees their own tree.
   - HRBP sees the tree of the director they cover.

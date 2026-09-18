@@ -18,5 +18,7 @@ Read `PROJECT_PLAN.md` (scope, principles, sequencing), `README.md`, and `docs/S
 - Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_text`) stay NULL until the text step runs. The label next to each (skills, recommendation, exit_reason, comment_theme) is the ground truth for text evals.
 - A metric exists when it has a definition in `metadata/metrics.yaml`, a function of the same name in `semantic/metrics.py`, and a hand-computed test on the fixture company. Never add one without all three.
 - Metric callers pass dates, a leader alias, allowlisted breakdowns and named options. Never accept SQL from a caller.
+- Authorization comes from `user_role` (whose data, effective dated) and `metadata/access_policy.yaml` (which data class, at which level). Never enforce access in a prompt, and never widen scope in code.
+- A request outside the caller's scope is a refusal with a reason, never an empty result.
 - Synthetic only. Never add real people data. Never commit `.env`.
 - Commit messages: `layerN: what changed`.

@@ -10,3 +10,5 @@ pyyaml>=6
 # layers 4+: model calls (key goes in .env)
 anthropic>=0.60
 python-dotenv>=1.0
+# layer 3: MCP server
+mcp>=2.2
