@@ -1,0 +1,393 @@
+# The metric registry: one written definition per metric, encoded once.
+#
+# - src/people_ai/semantic/definitions.py loads and validates this file; metrics.py implements one function per
+#   metric with the same name, and tests fail if the two disagree.
+# - docs/metric_definitions.md is generated from this file.
+# - Layer 3 serves it through list_metrics() and get_definition(); layer 4 puts it in prompts.
+#
+# Metric fields: name, title, definition, grain, period (as_of | range | cycle), leader_included, value_columns,
+# breakdowns, parameters, sources, sensitivity, access, edge_cases, verified_by (fact ids in facts.yaml).
+version: 1
+
+# Every group is a leader's tree. `scope` is a leader alias (or employee id); omit it for the whole company.
+dimensions:
+  leader: "The leaders one level below the scope leader (org_lvl_(k+1) in reporting_chain). Without a scope, the VPs."
+  manager: "Direct manager's alias on the relevant date."
+  job_family: "Job family, e.g. Engineering."
+  job_level: "Job level, 3 to 10."
+  location: "Office city."
+  region: "AMER, EMEA or APAC."
+  headcount_type: "Requisition type: new (growth) or backfill."
+  source_channel: "How an application arrived: inbound, referral, sourced, agency, campus, internal_mobility."
+  candidate_type: "external, internal or boomerang."
+  exit_reason: "Reason recorded at exit."
+  termination_type: "voluntary or involuntary."
+  comment_theme: "Theme of a survey comment."
+
+# Whether a leader counts inside their own tree is a per-metric decision:
+#   included for org size and flows (totals reconcile, and a leader's own hire, exit or promotion counts)
+#   excluded for manager effectiveness (span, engagement), where the leader is the subject, not the population
+metrics:
+  - name: headcount
+    title: Headcount
+    definition: >-
+      Employees whose latest employment event on or before the date has status active, counted in the tree of the
+      scope leader using the reporting chain valid on that date. Excludes people on leave unless include_leave is true.
+    grain: one row per breakdown combination (one row in total when no breakdown)
+    period: as_of
+    leader_included: true
+    sources: [employment_event, reporting_chain, dim_job, dim_location]
+    sensitivity: people
+    access:
+      individual: [manager_direct_reports, hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: headcount, description: "Number of employees."}
+    breakdowns: [leader, manager, job_family, job_level, location, region]
+    parameters:
+      - {name: as_of, description: "The date to count on. Any date, not only month ends."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+      - {name: include_leave, description: "Count people on leave as well (default false)."}
+    edge_cases:
+      - "A person with an accepted offer is not counted until their start date."
+      - "Someone who left on date D is not counted on D: their last working day is D-1."
+      - "The scope leader counts inside their own tree, so a director's tree is their reports plus themselves."
+    verified_by: [active_2025_12, active_2021_01, vps_2025_12, reorg_2_headcount]
+
+  - name: hires
+    title: Hires, rehires and internal moves
+    definition: >-
+      External hires (event type hire), rehires of former employees (rehire) and internal moves that came through
+      recruiting (transfer with reason internal_application), counted in the period and attributed to the tree the
+      person joined, using the chain on the event date. Internal moves are not hires.
+    grain: one row per breakdown combination
+    period: range
+    leader_included: true
+    sources: [employment_event, reporting_chain, dim_job, dim_location]
+    sensitivity: people
+    access:
+      individual: [manager_direct_reports, hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: hires, description: "External hires."}
+      - {name: rehires, description: "Former employees rehired."}
+      - {name: internal_moves, description: "Employees who moved in through an internal application."}
+    breakdowns: [leader, manager, job_family, job_level, location, region]
+    parameters:
+      - {name: start, description: "First day of the period (inclusive)."}
+      - {name: end, description: "Last day of the period (inclusive)."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+    edge_cases:
+      - "Hire events dated before 2021 are the initial load; they are history, not hiring activity."
+      - "An accepted offer with a start date after the data ends never becomes a hire."
+    verified_by: [headline_by_year]
+
+  - name: attrition
+    title: Attrition
+    definition: >-
+      Terminations in the period divided by average month-end active headcount over the period, annualized, in the
+      scope leader's tree. Each exit is attributed using the chain valid on the last working day (termination_date - 1).
+      kind selects voluntary (default), involuntary, regretted (voluntary with regretted_flag) or all.
+    grain: one row per breakdown combination
+    period: range
+    leader_included: true
+    sources: [termination, reporting_chain, employee_snapshot_monthly, dim_job]
+    sensitivity: people
+    access:
+      individual: [manager_direct_reports, hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: exits, description: "Terminations of the selected kind."}
+      - {name: avg_headcount, description: "Average month-end active headcount over the period."}
+      - {name: attrition_pct, description: "Annualized rate: exits / avg_headcount x (12 / months in period) x 100."}
+    breakdowns: [leader, manager, job_family, job_level]
+    parameters:
+      - {name: start, description: "First day of the period (inclusive)."}
+      - {name: end, description: "Last day of the period (inclusive)."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+      - {name: kind, description: "voluntary (default), involuntary, regretted or all."}
+    edge_cases:
+      - "Regretted attrition is a subset of voluntary, never of involuntary."
+      - "A rehired person who leaves twice counts twice; the denominator counts them once per month they were employed."
+      - "Attributing an exit by today's chain instead of the chain on the last working day moves history between leaders after a reorg."
+      - "Periods shorter than a month have no month end; the rate is then undefined and avg_headcount is NULL."
+      - "Someone who left on the first day of the window was never employed inside it and has no chain of their own; their manager's chain is used, so company totals always include every exit."
+    verified_by: [voluntary_attrition_2024_pct, regretted_share_2024_pct, s1_voluntary_pct_by_vp, headline_by_year]
+
+  - name: exit_reasons
+    title: Exit reasons
+    definition: >-
+      Counts and share of terminations by the reason recorded at exit, for the period and the scope leader's tree.
+      Answers "why are people leaving" once attrition says how many.
+    grain: one row per breakdown combination
+    period: range
+    leader_included: true
+    sources: [termination, reporting_chain]
+    sensitivity: people
+    access:
+      individual: [manager_direct_reports, hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: exits, description: "Terminations with this reason."}
+      - {name: share_pct, description: "Share of the exits in the result."}
+    breakdowns: [exit_reason, termination_type, leader, manager]
+    parameters:
+      - {name: start, description: "First day of the period (inclusive)."}
+      - {name: end, description: "Last day of the period (inclusive)."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+      - {name: kind, description: "voluntary (default), involuntary, regretted or all."}
+    edge_cases:
+      - "Reasons are recorded by HR at exit, not written by the employee; the exit interview text is the employee's version."
+    verified_by: []
+
+  - name: time_to_fill
+    title: Time to fill
+    definition: >-
+      Days from approved_date to closed_date for requisitions filled in the period, in the scope leader's tree.
+      A req belongs to the tree of its hiring manager on the day it opened. Cancelled reqs are excluded.
+    grain: one row per breakdown combination
+    period: range
+    leader_included: true
+    sources: [requisition, reporting_chain, dim_job, dim_location]
+    sensitivity: recruiting
+    access:
+      individual: [hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: filled_reqs, description: "Requisitions filled in the period."}
+      - {name: median_days, description: "Median days from approval to fill."}
+      - {name: p75_days, description: "75th percentile days from approval to fill."}
+    breakdowns: [leader, job_family, job_level, location, region, headcount_type]
+    parameters:
+      - {name: start, description: "First day of the period (inclusive)."}
+      - {name: end, description: "Last day of the period (inclusive)."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+    edge_cases:
+      - "Filled means an offer was accepted, not that the person started; start dates fall 2 to 6 weeks later."
+      - "Counting cancelled reqs, or measuring from opened_date, produces a different and usually worse-looking number."
+      - "Reqs still open at the end of the data have no fill time and are excluded."
+    verified_by: [s4_london_median_days_to_fill, s4_other_median_days_to_fill]
+
+  - name: funnel_conversion
+    title: Funnel conversion
+    definition: >-
+      Share of applications that advanced at each stage, for stages decided in the period, in the scope leader's tree.
+      An application belongs to the tree of its req's hiring manager on the day the req opened. All applicants are
+      included by default; break down by candidate_type or source_channel to compare channels.
+    grain: one row per stage per breakdown combination
+    period: range
+    leader_included: true
+    sources: [application_stage_event, application, requisition, reporting_chain, dim_job, dim_location]
+    sensitivity: recruiting
+    access:
+      individual: [hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: stage, description: "applied (resume review), recruiter_screen, hiring_manager_screen, onsite, offer."}
+      - {name: decided, description: "Stages that reached an outcome in the period."}
+      - {name: advanced, description: "Advanced to the next stage (accepted, at the offer stage)."}
+      - {name: conversion_pct, description: "advanced / decided x 100."}
+    breakdowns: [source_channel, candidate_type, leader, job_family, location, region]
+    parameters:
+      - {name: start, description: "First day of the period (inclusive)."}
+      - {name: end, description: "Last day of the period (inclusive)."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+      - {name: candidate_type, description: "Filter to external, internal or boomerang; omit for all."}
+    edge_cases:
+      - "Internal and boomerang applicants convert much better, so channel comparisons should filter or break down by candidate_type."
+      - "Stages still open at the end of the data have no outcome and are excluded."
+      - "A stage is counted in the period it was decided, not the period the application started."
+    verified_by: [s3_external_funnel_by_source]
+
+  - name: application_mix
+    title: Application mix
+    definition: >-
+      Applications received in the period and their share, by channel, candidate type or any allowed breakdown, in the
+      scope leader's tree. The volume side of funnel conversion: where applicants come from, before how well they convert.
+    grain: one row per breakdown combination
+    period: range
+    leader_included: true
+    sources: [application, requisition, reporting_chain, dim_job, dim_location]
+    sensitivity: recruiting
+    access:
+      individual: [hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: applications, description: "Applications received."}
+      - {name: share_pct, description: "Share of the applications in the result."}
+    breakdowns: [source_channel, candidate_type, leader, job_family, location, region]
+    parameters:
+      - {name: start, description: "First day of the period (inclusive)."}
+      - {name: end, description: "Last day of the period (inclusive)."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+    edge_cases:
+      - "One candidate can apply several times; this counts applications, not people."
+    verified_by: []
+
+  - name: offer_acceptance
+    title: Offer acceptance
+    definition: >-
+      Share of offers decided in the period that were accepted, in the scope leader's tree. Offers still awaiting a
+      decision are excluded.
+    grain: one row per breakdown combination
+    period: range
+    leader_included: true
+    sources: [offer, application, requisition, reporting_chain, dim_job, dim_location]
+    sensitivity: recruiting
+    access:
+      individual: [hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: decided, description: "Offers accepted or declined in the period."}
+      - {name: accepted, description: "Offers accepted."}
+      - {name: acceptance_pct, description: "accepted / decided x 100."}
+    breakdowns: [source_channel, candidate_type, leader, job_family, location, region]
+    parameters:
+      - {name: start, description: "First day of the period (inclusive)."}
+      - {name: end, description: "Last day of the period (inclusive)."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+    edge_cases:
+      - "An accepted offer can still fall through before the start date; this measures the decision, not arrivals."
+    verified_by: [s3_external_funnel_by_source]
+
+  - name: span_of_control
+    title: Span of control
+    definition: >-
+      Direct reports per manager among active employees in the scope leader's tree, on a date. The scope leader is
+      excluded: this describes the managers inside their organization, not the leader themselves.
+    grain: one summary row per breakdown combination, or one row per manager with detail=True
+    period: as_of
+    leader_included: false
+    sources: [employment_event, reporting_chain]
+    sensitivity: people
+    access:
+      individual: [manager_direct_reports, hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: managers, description: "People with at least one active direct report."}
+      - {name: mean_span, description: "Average direct reports per manager."}
+      - {name: median_span, description: "Median direct reports per manager."}
+      - {name: max_span, description: "Largest number of direct reports."}
+    breakdowns: [leader]
+    parameters:
+      - {name: as_of, description: "The date to measure on."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+      - {name: detail, description: "Return one row per manager instead of a summary (default false)."}
+    edge_cases:
+      - "People on leave are not counted as reports, so a manager's span dips while a report is on leave."
+      - "Managers with no reports left are not managers that day and do not appear."
+    verified_by: [avg_span_2025_12]
+
+  - name: layer_depth
+    title: Layer depth
+    definition: >-
+      How many management layers deep people sit: depth 1 is the CEO, 2 a VP, 3 a director, and so on, from the
+      reporting chain on the date. Reported as a distribution of active employees in the scope leader's tree.
+    grain: one row per depth per breakdown combination
+    period: as_of
+    leader_included: false
+    sources: [employment_event, reporting_chain]
+    sensitivity: people
+    access:
+      individual: [manager_direct_reports, hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: depth, description: "Depth in the company chain (1 = CEO)."}
+      - {name: levels_below_scope, description: "Layers below the scope leader (1 = their direct reports)."}
+      - {name: employees, description: "Active employees at that depth."}
+    breakdowns: [leader]
+    parameters:
+      - {name: as_of, description: "The date to measure on."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+      - {name: detail, description: "Return one row per employee instead of the distribution (default false)."}
+    edge_cases:
+      - "Depth counts management layers, not seniority: a Principal engineer and a junior engineer on the same team sit at the same depth."
+    verified_by: [max_depth_2025_12]
+
+  - name: promotion_rate
+    title: Promotion rate
+    definition: >-
+      Promotion events in the period divided by average month-end eligible headcount, annualized, in the scope
+      leader's tree. Eligible means active employees; everyone in this dataset is full time, so no worker-type
+      criterion is applied yet. Includes promotions into management through succession.
+    grain: one row per breakdown combination
+    period: range
+    leader_included: true
+    sources: [employment_event, reporting_chain, employee_snapshot_monthly, dim_job]
+    sensitivity: people
+    access:
+      individual: [manager_direct_reports, hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: promotions, description: "Promotion events in the period."}
+      - {name: avg_eligible, description: "Average month-end eligible headcount."}
+      - {name: promotion_rate_pct, description: "Annualized rate: promotions / avg_eligible x (12 / months) x 100."}
+    breakdowns: [leader, manager, job_family, job_level]
+    parameters:
+      - {name: start, description: "First day of the period (inclusive)."}
+      - {name: end, description: "Last day of the period (inclusive)."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+    edge_cases:
+      - "Eligibility criteria belong in this definition: when worker type exists, restrict to full time; a 12-months-in-level rule would go here too."
+      - "Breaking down by job_level uses the level after the promotion."
+      - "A lateral move into management is a job_change, not a promotion, and is not counted."
+    verified_by: []
+
+  - name: compa_ratio
+    title: Compa-ratio
+    definition: >-
+      Base salary divided by the midpoint of the pay band for the person's job and location, valid on the date,
+      for active employees in the scope leader's tree. Reported as an aggregate only: never individual pay.
+    grain: one row per breakdown combination
+    period: as_of
+    leader_included: true
+    sources: [employment_event, reporting_chain, compensation, dim_comp_band, dim_job, dim_location]
+    sensitivity: compensation
+    access:
+      individual: [manager_direct_reports, hrbp, people_analytics]
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: employees, description: "Employees in the group."}
+      - {name: mean_compa, description: "Average compa-ratio."}
+      - {name: median_compa, description: "Median compa-ratio."}
+      - {name: below_90_pct, description: "Share of employees below 0.9 of band midpoint."}
+    breakdowns: [leader, manager, job_family, job_level, location, region]
+    parameters:
+      - {name: as_of, description: "The date to measure on."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+      - {name: min_group, description: "Suppress groups smaller than this (default 5)."}
+    edge_cases:
+      - "Bands change on January 1: a compa-ratio falls when the band rises, with no change in pay."
+      - "Groups below min_group are returned with NULL values and suppressed = true."
+    verified_by: [s1_compa_by_family]
+
+  - name: engagement
+    title: Engagement
+    definition: >-
+      Average survey scores for a cycle in the scope leader's tree, from responses attributed by the chain on the
+      survey date. The scope leader's own response is excluded, so a manager's score reflects their team, not
+      themselves. Groups with fewer than min_respondents are suppressed.
+    grain: one row per breakdown combination
+    period: cycle
+    leader_included: false
+    sources: [engagement_response, reporting_chain]
+    sensitivity: engagement
+    access:
+      individual: []
+      aggregate: [manager, hrbp, executive, people_analytics]
+    value_columns:
+      - {name: respondents, description: "Responses in the group."}
+      - {name: engagement_score, description: "Average overall engagement, 1 to 5."}
+      - {name: manager_score, description: "Average rating of their manager."}
+      - {name: growth_score, description: "Average career growth score."}
+      - {name: suppressed, description: "True when the group is too small to report."}
+    breakdowns: [leader, manager, comment_theme]
+    parameters:
+      - {name: cycle, description: "Survey year, e.g. '2024'."}
+      - {name: scope, description: "Leader alias; omit for the whole company."}
+      - {name: min_respondents, description: "Suppression threshold (default 5)."}
+    edge_cases:
+      - "Individual responses are never returned, by any role."
+      - "Response rate is about 74%, so scores describe respondents, not everyone."
+      - "Breaking down a small team by comment_theme can suppress every row; that is the rule working, not an error."
+    verified_by: [s1_engagement_by_vp]

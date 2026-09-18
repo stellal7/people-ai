@@ -129,9 +129,11 @@ Acceptance, enforced by `tests/test_data_integrity.py` and `tests/test_planted_s
 
 Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_text`) are NULL for now. Each sits next to a ground-truth label, ready for an optional LLM text-generation step.
 
-### Layer 2: Semantic layer
+### Layer 2: Semantic layer (DONE, 2026-09-18)
 
 **Goal:** metrics defined once, in code, with plain-language definitions the model can read.
+
+**Status:** 13 metrics defined in `metadata/metrics.yaml` and implemented in `semantic/metrics.py`, with `docs/metric_definitions.md` generated from the registry. Callers pass dates, a leader alias, allowlisted breakdowns and named options; never SQL. Tested three ways: hand-computed answers on a ten-person fixture company, the verified facts reproduced on the real dataset, and a check that every definition has a matching function.
 
 **Deliverables:**
 
@@ -143,6 +145,8 @@ Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_te
   - `time_to_fill(start, end, scope)`: approved_date to closed_date for filled reqs; median and p75
   - `funnel_conversion(start, end, scope)`: advance rate by stage, for all applicants by default, with the application mix and conversion by source channel and candidate type
   - `offer_acceptance(start, end, scope)`
+  - `exit_reasons(start, end, scope)`: counts and share by reason recorded at exit, the "why" behind attrition
+  - `application_mix(start, end, scope)`: applications and their share by channel and candidate type
   - `span_of_control(as_of, scope)`: direct reports per manager, distribution and mean
   - `layer_depth(as_of, scope)`: distance from top for each employee
   - `promotion_rate(start, end, scope)`: promotions over average eligible headcount. Eligibility criteria live in the definition; today eligible = active (everyone is full time). Add a full-time criterion when worker type exists.

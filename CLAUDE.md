@@ -16,5 +16,7 @@ Read `PROJECT_PLAN.md` (scope, principles, sequencing), `README.md`, and `docs/S
 - When data changes on purpose, run `render_docs --facts`, review every difference, then update `expected` in `metadata/facts.yaml`. Don't bulk-copy live values without reviewing them.
 - Changing anything under PLANTED SIGNALS in `src/people_ai/synthetic/params.py` means updating `metadata/facts.yaml` and `tests/test_planted_signals.py` in the same commit.
 - Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_text`) stay NULL until the text step runs. The label next to each (skills, recommendation, exit_reason, comment_theme) is the ground truth for text evals.
+- A metric exists when it has a definition in `metadata/metrics.yaml`, a function of the same name in `semantic/metrics.py`, and a hand-computed test on the fixture company. Never add one without all three.
+- Metric callers pass dates, a leader alias, allowlisted breakdowns and named options. Never accept SQL from a caller.
 - Synthetic only. Never add real people data. Never commit `.env`.
 - Commit messages: `layerN: what changed`.

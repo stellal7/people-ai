@@ -19,6 +19,18 @@ python3.12 -m venv .venv
 
 This writes `data/people.duckdb` and one parquet file per table.
 
+## Asking for a number
+
+```python
+from people_ai.semantic import metrics as m
+
+m.headcount("2025-12-31", scope="mmorales")                       # a leader's tree, on any date
+m.attrition("2024-01-01", "2024-12-31", scope="mmorales", by="leader")
+m.funnel_conversion("2025-01-01", "2025-12-31", by="source_channel", candidate_type="external")
+```
+
+Metrics take dates, a leader alias, allowlisted breakdowns and named options, never SQL. Definitions live in [metadata/metrics.yaml](metadata/metrics.yaml) and are published as [docs/metric_definitions.md](docs/metric_definitions.md).
+
 ## Metadata is tested, not just written
 
 `metadata/tables.yaml` describes every table and column, and `metadata/facts.yaml` holds every number the docs quote with the SQL behind it. Tests check both against the data, and the schema doc is generated from them. If the data changes and the metadata doesn't, the build fails instead of the docs quietly going stale.
@@ -53,8 +65,8 @@ Acme Corp, January 2021 to December 2025:
 | # | Layer | Status |
 |---|---|---|
 | 1 | Synthetic data + integrity tests | Done |
-| 2 | Semantic layer: metric definitions in code | Next |
-| 3 | Authorization + MCP server | |
+| 2 | Semantic layer: 13 metrics, defined once and tested | Done |
+| 3 | Authorization + MCP server | Next |
 | 4 | Agent: routing, text-to-SQL, multi-step | |
 | 5 | Skill: talent review drafting | |
 | 6 | Evals: golden set, three-tier scoring, failure taxonomy | |
@@ -65,9 +77,10 @@ Acme Corp, January 2021 to December 2025:
 ```
 src/people_ai/generate_data.py     entry point for layer 1
 src/people_ai/synthetic/           simulation: params, dims, engine, recruiting, export
-metadata/                          tables.yaml, facts.yaml, doc template (source of truth for meaning)
+metadata/                          tables.yaml, facts.yaml, metrics.yaml, doc templates (source of truth for meaning)
 src/people_ai/metadata/            load and validate metadata, render docs
-tests/                             integrity, planted-signal and metadata tests
-docs/                              generated schema doc, metric definitions, architecture
+src/people_ai/semantic/            layer 2: leader hierarchy, metric registry, metric functions
+tests/                             integrity, planted-signal, metadata and semantic-layer tests
+docs/                              generated schema doc and metric definitions, architecture
 data/                              generated DuckDB + parquet
 ```
