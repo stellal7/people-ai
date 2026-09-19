@@ -6,6 +6,58 @@ It is a portfolio project and a way to learn, by building, the vocabulary of AI 
 
 All people, names, emails and phone numbers are fake. No real HR data belongs in this repo.
 
+## How it fits together
+
+```mermaid
+flowchart TB
+  subgraph agent["Layer 4 — agent"]
+    router["router (cheap model)<br/>metric | definition | sql | retrieval | refuse"]
+    sql["text-to-SQL (strong model)<br/>one SELECT, one repair"]
+  end
+  subgraph door["Layer 3 — the governed door (MCP)"]
+    tools["6 tools · scope check · policy floor · logging"]
+  end
+  subgraph meaning["Layer 2 — semantic layer"]
+    metrics["13 metrics defined once<br/>definitions, breakdowns, suppression"]
+  end
+  subgraph truth["Layer 1 — data"]
+    warehouse[("events · reporting chain<br/>snapshots · pay · recruiting")]
+    corpus[("policies · resumes · comments")]
+  end
+  evals["Layer 6 — evals<br/>golden set · 3 tiers · failure taxonomy"]
+
+  person([person]) --> agent --> door --> meaning --> warehouse
+  door --> corpus
+  evals -.scores.-> agent
+  metadata[["metadata/<br/>tables · metrics · facts · access policy"]] -.defines.-> meaning
+  metadata -.defines.-> door
+```
+
+Each layer refuses something the one above it might ask for: the semantic layer refuses undefined metrics, the door refuses data outside the caller's scope, and the agent refuses questions the data cannot answer.
+
+## What happens to one question
+
+```mermaid
+flowchart LR
+  q([question]) --> cache{"seen a verified<br/>question like this?"}
+  cache -->|"yes — replay the plan"| run["run metric or SQL<br/><b>no model call</b>"]
+  cache -->|no| route["router (cheap model)"]
+  route --> metric["metric call"]
+  route --> gen["write SQL (strong model)"]
+  route --> rag["retrieve + cite"]
+  route --> refuse["refuse, with a reason"]
+  metric --> run
+  gen --> guard{"SQL guard:<br/>read-only, allowlisted,<br/>scoped views"}
+  guard -->|rejected| gen
+  guard -->|ok| run
+  run --> answer([answer + definition + scope + citations])
+  rag --> answer
+  refuse --> answer
+  answer -.logged.-> log[("ask log<br/>feeds the cache")]
+```
+
+Numbers are never cached, only the plan that produces them: a repeated question re-runs its SQL against fresh data without calling a model.
+
 ## Quickstart
 
 ```bash
