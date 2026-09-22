@@ -66,7 +66,7 @@ class Claude:
             raise ModelError(f"the model declined this request ({getattr(response.stop_details, 'category', None)})")
         text = next((block.text for block in response.content if block.type == "text"), None)
         if text is None:
-            raise ModelError("no text block in the response")
+            raise ModelError(f"no text block in the response (stop_reason={response.stop_reason})")
         usage = Usage(model=model, input_tokens=response.usage.input_tokens,
                       output_tokens=response.usage.output_tokens,
                       cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,

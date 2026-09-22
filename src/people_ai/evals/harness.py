@@ -208,7 +208,7 @@ def make_judge(client=None, model=ANSWER_MODEL):
     def judge(question, answer):
         user = (f"Question asked: {question.question}\n\nRubric: {question.rubric}\n\n"
                 f"Answer given:\n{json.dumps(answer.to_dict(), indent=2, default=str)[:6000]}")
-        verdict, _ = client.json(system=JUDGE_SYSTEM, user=user, schema=JUDGE_SCHEMA, model=model, max_tokens=500)
+        verdict, _ = client.json(system=JUDGE_SYSTEM, user=user, schema=JUDGE_SCHEMA, model=model, max_tokens=4000)
         return verdict
 
     return judge
@@ -239,7 +239,12 @@ def run(questions=None, ask_fn=None, judge=None, tiers=TIERS, results_dir: Path 
             results.append(Result(question.id, question.tier, question.persona, question.question, False,
                                   question.targets or "wrong_route", f"{type(error).__name__}: {error}"))
             continue
-        results.append(score(question, answer, facts, judge=judge))
+        try:
+            results.append(score(question, answer, facts, judge=judge))
+        except Exception as error:               # a failed judge call scores that question, not the run
+            results.append(Result(question.id, question.tier, question.persona, question.question, False,
+                                  question.targets or "wrong_route", f"judge failed: {type(error).__name__}: {error}",
+                                  answer.route, answer.refused, answer.summary()))
 
     summary = summarize(results)
     write_results(results, summary, results_dir)
