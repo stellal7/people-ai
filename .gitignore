@@ -7,4 +7,7 @@ __pycache__/
 .env
 logs/*.jsonl
 evals/results/*.tmp
+
+# generated: `python -m people_ai.generate_data` rebuilds it identically from seed 42
+data/
 logs/*.txt
