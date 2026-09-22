@@ -188,7 +188,9 @@ questions:
     tier: business
     targets: definition_mismatch
     expect: {route: metric, metric: compa_ratio, min_rows: 3}
-    rubric: Names Data as the lowest and explains compa-ratio as pay against band midpoint.
+    rubric: >
+      Says in the answer itself which job family is furthest below band (Data), rather than leaving it to be
+      read off the rows, and explains compa-ratio as pay against the band midpoint.
 
   - id: engagement_2024
     question: What was engagement in 2024 for mmorales's organisation?
@@ -387,4 +389,6 @@ questions:
     tier: business
     targets: unsupported_claim
     expect: {refused: true}
-    rubric: Says the data ends in 2025 and it cannot forecast, or offers the historical trend instead.
+    rubric: >
+      Declines to forecast and, in the answer itself, either states when the data ends (December 2025) or gives
+      the historical attrition trend. Refusing without either is not enough.

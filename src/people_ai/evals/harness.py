@@ -49,6 +49,13 @@ You grade one answer from a people-analytics assistant against a rubric. Judge o
 Pass if the answer satisfies the rubric, including when it correctly refuses or says the data cannot answer.
 Fail if it invents causes the data does not show, omits what the rubric requires, or states a number without the
 definition, scope or period it used when the rubric asks for those.
+
+Two rules the rubric always assumes:
+
+1. A fact counts as stated only if the answer says it. Rows are evidence, not an answer: if the rubric asks for
+   a finding and the answer only returns rows the reader would have to work it out from, that is a fail.
+2. Follow your own reason. If the reason you write names something the rubric requires and the answer lacks,
+   the verdict is fail, however minor the gap seems.
 """.strip()
 
 
@@ -178,10 +185,12 @@ def score(question: Question, answer, facts, judge=None):
             return Result(question.id, question.tier, question.persona, question.question, False,
                           "refused_when_it_should_answer", answer.refusal_reason or "", answer.route, True,
                           answer.summary())
-        if expect.get("route") and answer.route != expect["route"]:
+        # A trust question is about what the answer says, so the route it took is recorded, not scored: a
+        # routing miss belongs to the path tier, where a question exists to catch it.
+        if expect.get("route") and answer.route != expect["route"] and question.tier != "business":
             return Result(question.id, question.tier, question.persona, question.question, False, "wrong_route",
                           f"expected route {expect['route']}, got {answer.route}", answer.route, False, answer.summary())
-        if expect.get("metric") and answer.metric != expect["metric"]:
+        if expect.get("metric") and answer.metric != expect["metric"] and question.tier != "business":
             return Result(question.id, question.tier, question.persona, question.question, False, "wrong_route",
                           f"expected metric {expect['metric']}, got {answer.metric}", answer.route, False, answer.summary())
         if "min_rows" in expect and len(answer.rows or []) < expect["min_rows"]:
@@ -206,9 +215,13 @@ def score(question: Question, answer, facts, judge=None):
             return Result(question.id, question.tier, question.persona, question.question, True, None,
                           "not judged (no model available)", answer.route, answer.refused, answer.summary(), answer_detail(answer))
         verdict = judge(question, answer)
+        note = ""
+        if expect.get("route") and answer.route != expect["route"]:
+            note = f" [routed to {answer.route}, expected {expect['route']}]"
         return Result(question.id, question.tier, question.persona, question.question, verdict["passes"],
                       None if verdict["passes"] else (question.targets or "unsupported_claim"),
-                      verdict["reason"], answer.route, answer.refused, answer.summary(), answer_detail(answer))
+                      verdict["reason"] + note, answer.route, answer.refused, answer.summary(),
+                      answer_detail(answer))
 
     return Result(question.id, question.tier, question.persona, question.question, True, None,
                   detail or "as expected", answer.route, answer.refused, answer.summary(), answer_detail(answer))
