@@ -16,7 +16,7 @@ PERIODS = {"as_of", "range", "cycle"}
 ROLES = {"manager", "manager_direct_reports", "hrbp", "executive", "people_analytics"}
 METRIC_REQUIRED = {"name", "title", "definition", "grain", "period", "leader_included", "sources", "sensitivity",
                    "access", "value_columns", "breakdowns", "parameters"}
-METRIC_OPTIONAL = {"edge_cases", "verified_by"}
+METRIC_OPTIONAL = {"edge_cases", "verified_by", "headline"}
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,7 @@ class Metric:
     parameters: tuple[dict, ...]
     edge_cases: tuple[str, ...] = ()
     verified_by: tuple[str, ...] = ()
+    headline: dict | None = None      # which value column carries the finding, and which end of it is notable
 
 
 @dataclass(frozen=True)
@@ -88,13 +89,20 @@ def load_metrics(path: Path = METADATA_DIR / "metrics.yaml", catalog=None) -> Re
                 check_keys(entry, {"name", "description"}, set(), f"{where}.{field}", errors)
         if not m["value_columns"]:
             errors.append(f"{where}: needs at least one value column")
+        headline = m.get("headline")
+        if headline is not None:
+            check_keys(headline, {"column", "notable"}, {"unit"}, f"{where}.headline", errors)
+            if headline.get("column") not in {c["name"] for c in m["value_columns"]}:
+                errors.append(f"{where}.headline: {headline.get('column')} is not one of this metric's value columns")
+            if headline.get("notable") not in ("high", "low", "neither"):
+                errors.append(f"{where}.headline.notable: must be high, low or neither")
         metrics.append(Metric(
             name=m["name"], title=m["title"], definition=m["definition"].strip(), grain=m["grain"],
             period=m["period"], leader_included=bool(m["leader_included"]), sources=tuple(m["sources"]),
             sensitivity=m["sensitivity"], access={k: tuple(v or ()) for k, v in m["access"].items()},
             value_columns=tuple(m["value_columns"]), breakdowns=tuple(m["breakdowns"]),
             parameters=tuple(m["parameters"]), edge_cases=tuple(m.get("edge_cases", ())),
-            verified_by=tuple(m.get("verified_by", ()))))
+            verified_by=tuple(m.get("verified_by", ())), headline=m.get("headline")))
 
     if errors:
         raise MetadataError("metadata/metrics.yaml is invalid:\n  " + "\n  ".join(errors))

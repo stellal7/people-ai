@@ -8,6 +8,7 @@ is an answer too, with the reason the governed layer gave.
 from dataclasses import asdict, dataclass, field
 
 from people_ai.access.authz import AuthorizationError
+from people_ai.agent import compose as compose_module
 from people_ai.agent import context as context_module
 from people_ai.agent import router as router_module
 from people_ai.agent import text_to_sql
@@ -33,15 +34,25 @@ class Answer:
     refusal_reason: str | None = None
     notes: list = field(default_factory=list)
     usage: list = field(default_factory=list)
+    finding: str | None = None        # what the rows show, computed from them, never written by a model
+    text: str | None = None           # the whole answer in one fixed order: finding, definition, scope, period
 
     def to_dict(self):
         data = asdict(self)
         data["usage"] = [str(u) for u in self.usage if u]
         return data
 
+    def compose(self):
+        """Fill in finding and text. The only path from rows to words a person reads."""
+        self.finding = compose_module.finding(self)
+        self.text = compose_module.compose(self)
+        return self
+
     def summary(self):
         if self.refused:
             return f"Refused: {self.refusal_reason}"
+        if self.finding:
+            return self.finding
         if self.rows is None:
             return self.definition or self.reason
         head = ", ".join(f"{k}={v}" for k, v in (self.rows[0] or {}).items()) if self.rows else "no rows"
@@ -49,6 +60,17 @@ class Answer:
 
 
 def ask(question, user_id, as_of=None, client=None, router_client=None, context=None):
+    """
+    Route one question, answer it through the governed tools, and say what the answer shows.
+
+    Every answer leaves here composed: `answer.text` is what a person reads, in one order, and `answer.finding`
+    is the sentence stating what the rows show. Callers still get the rows and the provenance on the object.
+    """
+    return _answer(question, user_id, as_of=as_of, client=client, router_client=router_client,
+                   context=context).compose()
+
+
+def _answer(question, user_id, as_of=None, client=None, router_client=None, context=None):
     """Route one question and answer it through the governed tools."""
     client = client or Claude()
     router_client = router_client or client

@@ -115,8 +115,10 @@ def load_questions(path: Path = QUESTIONS_PATH):
 
 
 def answer_text(answer):
-    parts = [answer.reason or "", answer.definition or "", answer.refusal_reason or "", answer.sql_rationale or "",
-             answer.scope or "", " ".join(answer.notes), json.dumps(answer.rows or [], default=str)]
+    """Everything the caller was told, including the composed text, which is what a person actually reads."""
+    parts = [getattr(answer, "text", "") or "", answer.reason or "", answer.definition or "",
+             answer.refusal_reason or "", answer.sql_rationale or "", answer.scope or "", " ".join(answer.notes),
+             json.dumps(answer.rows or [], default=str)]
     return " ".join(parts).lower()
 
 
@@ -157,7 +159,8 @@ def answer_detail(answer, max_rows=5):
     """The parts of an answer a person needs to judge it, small enough to keep in the results file."""
     data = answer.to_dict()
     rows = data.get("rows")
-    return {"definition": data.get("definition"), "scope": data.get("scope"), "period": data.get("period"),
+    return {"text": data.get("text"), "finding": data.get("finding"),
+            "definition": data.get("definition"), "scope": data.get("scope"), "period": data.get("period"),
             "notes": data.get("notes"), "metric": data.get("metric"), "sql": data.get("sql"),
             "refusal_reason": data.get("refusal_reason"),
             "rows": rows[:max_rows] if isinstance(rows, list) else rows,
