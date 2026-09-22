@@ -2,11 +2,31 @@
 
 A governed AI agent on **synthetic** people data: recruiting funnel through exit, with row-level authorization, a semantic layer, an MCP server, and an evaluation harness. It shows how such an agent is designed, governed and measured, and the domain judgment the numbers rest on.
 
-All people, names, emails and phone numbers are fake. No real HR data belongs in this repo. Scope and sequencing live in [PROJECT_PLAN.md](PROJECT_PLAN.md); the choices and their costs in [docs/decisions.md](docs/decisions.md).
+[Results](#results) · [What it shows](#what-this-shows-about-building-agents-on-governed-data) · [How it works](#how-it-works) · [Decisions](docs/decisions.md) · [People data notes](docs/people_data_notes.md)
+
+All people, names, emails and phone numbers are fake. No real HR data belongs in this repo. Scope and sequencing live in [PROJECT_PLAN.md](PROJECT_PLAN.md).
+
+## Asking a question in English
+
+```bash
+cp .env.example .env     # set ANTHROPIC_API_KEY
+```
+
+```python
+from people_ai.agent.ask import ask
+
+answer = ask("What was attrition in 2024?", user_id=1341)   # 1341 is the people analytics persona
+answer.rows        # [{'exits': 444, 'avg_headcount': 3987.5, 'attrition_pct': 11.1}]
+answer.definition  # the written definition that was applied
+answer.scope       # the leader tree it was computed for
+answer.notes       # suppression, truncation, low confidence
+```
+
+A cheap model (`claude-haiku-4-5`) routes the question to a metric, a definition, guarded SQL, or an honest "this data can't answer that". A strong model (`claude-opus-5`) writes SQL when no metric fits, with one repair attempt if the guard rejects it. Ask as a manager instead of an analyst and the same question returns a different answer, or a refusal with a reason.
 
 ## Results
 
-The 51 golden questions on 2026-09-22: **44 passed (86.3%)**. The router is `claude-haiku-4-5`; SQL and the judge are `claude-opus-5`. Full report: [evals/results/2026-09-22.md](evals/results/2026-09-22.md).
+The 51 golden questions on 2026-09-22: **44 passed (86.3%)**. The router is `claude-haiku-4-5`; SQL and the judge are `claude-opus-5`. Full report, including accuracy by route: [evals/results/2026-09-22.md](evals/results/2026-09-22.md).
 
 | tier | what it checks | passed | accuracy | target |
 |---|---|---|---|---|
@@ -14,26 +34,9 @@ The 51 golden questions on 2026-09-22: **44 passed (86.3%)**. The router is `cla
 | data | the number matches a fact verified in SQL | 11 / 11 | 100% | 90% |
 | trust | a judge checks the answer states its finding, definition, scope, period and caveats | 5 / 11 | 45.5% | 80% |
 
-The three tiers have different denominators because each question is written to test one thing: 29 questions are about taking the right path, 11 have a known number, and 11 are judged on whether a person could trust the answer.
+The tiers have different denominators because each question tests one thing: 29 are about taking the right path, 11 have a known number, and 11 are judged on whether a person could trust the answer. Of the 51, **11 must be refused**: eight try to reach data outside the caller's access, three ask for something this data cannot answer. Ten were refused. The miss returned a definition rather than data, and no run has yet produced rows from outside a caller's scope.
 
 Trust was 63.6% until the judge itself was checked against hand-scored verdicts on all 11 answers. It agreed on 9, and both misses had passed an answer whose substance sat in the returned rows rather than in anything the answer said. Corrected, the same answers score 45.5%: the agent did not change, the ruler did ([judge_calibration.md](evals/judge_calibration.md)).
-
-| expected route | passed | accuracy |
-|---|---|---|
-| metric | 24 / 28 | 85.7% |
-| definition | 4 / 4 | 100% |
-| sql | 7 / 7 | 100% |
-| retrieval | no questions yet, not built | n/a |
-| refuse | 10 / 11 | 90.9% |
-
-**Refusals: 10 of the 11 that must be refused were.** Eight try to reach data outside the caller's access; three ask for something this data cannot answer. The single miss returned a definition, not data: no run has yet produced rows from outside a caller's scope, which the harness scores as `authorization_leak`.
-
-### What the misses taught
-
-- **Refusal has to be decided on what the question asks for, not on whether rows came back.** A manager asked what another team is paid and received the written definition of compa-ratio. No pay data was returned, so nothing leaked, but the question was still one they may not ask. The fix is to classify the data class the question is about before routing it.
-- **Governance can be wrong in the direction of too little, and it costs you numbers.** Access was resolved as of today and then applied to every historical row, so the 2,073 people who have left disappeared from history, even for the role meant to see everything. Three questions returned wrong numbers with correct SQL. Fixed on 2026-09-22 by resolving visibility at each row's date, which took the data tier from 72.7% to 100% with no change to any prompt or metric ([decision 6](docs/decisions.md)).
-- **An answer that is right but silent still fails.** Five of the six trust-tier misses return the right rows and never state the finding: which job family is furthest below band, that a headcount drop was a team moving rather than attrition, that the funnel includes internal applicants who convert differently. That is the open work, and the score says so.
-- **Check the ruler before optimising against it.** The judge was scoring answers as passes when its own written reason named what the rubric required and the answer lacked. Calibrating it cost 18 points of trust accuracy and bought a number worth acting on.
 
 ## What this shows about building agents on governed data
 
@@ -53,25 +56,13 @@ Trust was 63.6% until the judge itself was checked against hand-scored verdicts 
 
 The worked examples, with the numbers and the commands that produce them, are in [docs/people_data_notes.md](docs/people_data_notes.md).
 
-## Asking a question in English (needs an API key)
+## What the misses taught
 
-```bash
-cp .env.example .env     # set ANTHROPIC_API_KEY
-```
+- **Refusal has to be decided on what the question asks for, not on whether rows came back.** A manager asked what another team is paid and received the written definition of compa-ratio. Nothing leaked, but the question was still one they may not ask.
+- **Governance can be wrong in the direction of too little, and it costs you numbers.** Access was resolved as of today and applied to every historical row, so the 2,073 people who have left disappeared from history, even for the role meant to see everything. Three questions returned wrong numbers with correct SQL; fixing it took the data tier from 72.7% to 100% with no change to any prompt or metric ([decision 6](docs/decisions.md)).
+- **An answer that is right but silent still fails.** Five of the six trust misses return the right rows and never state the finding, and the score says so. That is the open work: an answer composer, and business rules the agent can retrieve and cite.
 
-```python
-from people_ai.agent.ask import ask
-
-answer = ask("What was attrition in 2024?", user_id=1341)   # 1341 is the people analytics persona
-answer.rows        # [{'exits': 444, 'avg_headcount': 3987.5, 'attrition_pct': 11.1}]
-answer.definition  # the written definition that was applied
-answer.scope       # the leader tree it was computed for
-answer.notes       # suppression, truncation, low confidence
-```
-
-A cheap model (`claude-haiku-4-5`) routes the question to a metric, a definition, guarded SQL, or an honest "this data can't answer that". A strong model (`claude-opus-5`) writes SQL when no metric fits, with one repair attempt if the guard rejects it. Refusals come back as answers with reasons, not exceptions.
-
-## How it fits together
+## How it works
 
 ```mermaid
 flowchart TB
@@ -87,7 +78,7 @@ flowchart TB
   end
   subgraph truth["Layer 1 — data"]
     warehouse[("events · reporting chain<br/>snapshots · pay · recruiting")]
-    corpus[("policies · resumes · comments")]
+    corpus[("policy documents<br/>numbered clauses")]
   end
   evals["Layer 6 — evals<br/>golden set · 3 tiers · failure taxonomy"]
 
@@ -100,16 +91,16 @@ flowchart TB
 
 Each layer refuses something the one above it might ask for: the semantic layer refuses undefined metrics, the door refuses data outside the caller's scope, and the agent refuses questions the data cannot answer.
 
-## What happens to one question
+### The path of one question
 
 ```mermaid
 flowchart LR
   q([question]) --> cache{"seen a verified<br/>question like this?"}
-  cache -->|"yes — replay the plan"| run["run metric or SQL<br/><b>no model call</b>"]
+  cache -.->|"yes — replay the plan (planned)"| run["run metric or SQL<br/><b>no model call</b>"]
   cache -->|no| route["router (cheap model)"]
   route --> metric["metric call"]
   route --> gen["write SQL (strong model)"]
-  route --> rag["retrieve + cite"]
+  route -.-> rag["retrieve + cite (planned)"]
   route --> refuse["refuse, with a reason"]
   metric --> run
   gen --> guard{"SQL guard:<br/>read-only, allowlisted,<br/>scoped views"}
@@ -118,12 +109,42 @@ flowchart LR
   run --> answer([answer + definition + scope + citations])
   rag --> answer
   refuse --> answer
-  answer -.logged.-> log[("ask log<br/>feeds the cache")]
+  answer -.logged.-> log[("ask log (planned)<br/>feeds the cache")]
 ```
 
-Numbers are never cached, only the plan that produces them: a repeated question re-runs its SQL against fresh data without calling a model.
+Dashed paths are the design, not yet the code: retrieval, the ask log and the plan cache are next. The rule they follow is that numbers are never cached, only the plan that produces them, so a repeated question re-runs its SQL against fresh data without calling a model.
 
-## Quickstart
+### The governed door
+
+```bash
+.venv/bin/python -m people_ai.mcp_server.server      # MCP server over stdio
+```
+
+Six tools: `list_metrics`, `get_definition`, `get_metric`, `describe_leader`, `search_people`, `run_readonly_sql`. Each resolves the caller's grants from `user_role` on the date, checks the requested leader against them, applies the data-class floor from [metadata/access_policy.yaml](metadata/access_policy.yaml), and logs the call. A row is visible if the person was inside the caller's tree on the date that row belongs to. Asking about someone else's organization is a refusal with a reason, never an empty table. See [docs/architecture.md](docs/architecture.md).
+
+### The semantic layer
+
+```python
+from people_ai.semantic import metrics as m
+
+m.headcount("2025-12-31", scope="mmorales")                       # a leader's tree, on any date
+m.attrition("2024-01-01", "2024-12-31", scope="mmorales", by="leader")
+m.funnel_conversion("2025-01-01", "2025-12-31", by="source_channel", candidate_type="external")
+```
+
+Metrics take dates, a leader alias, allowlisted breakdowns and named options, never SQL. Definitions live in [metadata/metrics.yaml](metadata/metrics.yaml) and are published as [docs/metric_definitions.md](docs/metric_definitions.md). `metadata/tables.yaml` describes every table and column, and `metadata/facts.yaml` holds every number the docs quote with the SQL behind it: tests check both against the data and the schema doc is generated from them, so if the data changes and the metadata does not, the build fails instead of the docs quietly going stale.
+
+### How the evals work
+
+```bash
+python evals/runner.py --tier execution,data      # no model needed for judging
+```
+
+51 golden questions with known answers, scored in three tiers, with every failure tagged from [evals/taxonomy.md](evals/taxonomy.md): nineteen categories, from `wrong_grain` to `authorization_leak`. Data-tier answers are checked against the verified facts. The trust tier is scored by a model whose verdicts are themselves checked by hand ([judge_calibration.md](evals/judge_calibration.md)), because a judge nobody audits is a number nobody should quote. Results are written to `evals/results/<timestamp>` and never overwritten.
+
+## Run it and look around
+
+### Quickstart
 
 ```bash
 python3.12 -m venv .venv
@@ -136,39 +157,7 @@ python3.12 -m venv .venv
 
 This writes `data/people.duckdb` and one parquet file per table.
 
-## Asking for a number
-
-```python
-from people_ai.semantic import metrics as m
-
-m.headcount("2025-12-31", scope="mmorales")                       # a leader's tree, on any date
-m.attrition("2024-01-01", "2024-12-31", scope="mmorales", by="leader")
-m.funnel_conversion("2025-01-01", "2025-12-31", by="source_channel", candidate_type="external")
-```
-
-Metrics take dates, a leader alias, allowlisted breakdowns and named options, never SQL. Definitions live in [metadata/metrics.yaml](metadata/metrics.yaml) and are published as [docs/metric_definitions.md](docs/metric_definitions.md).
-
-## The governed door
-
-```bash
-.venv/bin/python -m people_ai.mcp_server.server      # MCP server over stdio
-```
-
-Six tools: `list_metrics`, `get_definition`, `get_metric`, `describe_leader`, `search_people`, `run_readonly_sql`. Each resolves the caller's grants from `user_role` on the date, checks the requested leader against them, applies the data-class floor from [metadata/access_policy.yaml](metadata/access_policy.yaml), and logs the call. Asking about someone else's organization is a refusal with a reason, never an empty table. See [docs/architecture.md](docs/architecture.md).
-
-## Evals
-
-```bash
-python evals/runner.py --tier execution,data
-```
-
-51 golden questions with known answers, scored in three tiers (did it take the right path, is the number right, would a person trust the answer), with every failure tagged from [evals/taxonomy.md](evals/taxonomy.md). Data-tier answers are checked against the verified facts, and 11 questions must be refused: 8 attempts to reach data outside the caller's access and 3 questions the data cannot answer.
-
-## Metadata is tested, not just written
-
-`metadata/tables.yaml` describes every table and column, and `metadata/facts.yaml` holds every number the docs quote with the SQL behind it. Tests check both against the data, and the schema doc is generated from them. If the data changes and the metadata doesn't, the build fails instead of the docs quietly going stale.
-
-## What's in the data
+### What's in the data
 
 Acme Corp, January 2021 to December 2025:
 
@@ -193,7 +182,7 @@ Acme Corp, January 2021 to December 2025:
 | Employees (HRIS) | `employee`, `employment_event`, `reporting_chain`, `employee_snapshot_monthly`, `compensation`, `performance_rating`, `termination`, `engagement_response` |
 | Governance | `user_role`, `demo_user` |
 
-## Layers
+### Layers
 
 | # | Layer | What it is |
 |---|---|---|
@@ -211,7 +200,7 @@ Numbering follows [PROJECT_PLAN.md](PROJECT_PLAN.md), which holds the full roadm
 2. **An answer composer,** so every answer states its finding, definition, scope, period and caveats in a fixed order rather than handing over rows.
 3. **Marts in dbt and a Snowflake mirror,** building the same two tables from the event log, with the Python-generated snapshot as the test oracle.
 
-## Repo layout
+### Repo layout
 
 ```
 src/people_ai/generate_data.py     entry point for layer 1
