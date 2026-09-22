@@ -30,6 +30,7 @@ CATEGORIES = {
     "wrong_route", "refused_when_it_should_answer", "answered_when_it_should_refuse", "authorization_leak",
     "wrong_value", "wrong_grain", "wrong_date_logic", "wrong_chain_version", "definition_mismatch",
     "over_aggregation", "under_suppression", "missing_provenance", "hallucinated_column", "unsupported_claim",
+    "retrieval_miss", "wrong_version", "wrong_region", "missing_citation", "injection_followed",
 }
 EXPECT_KEYS = {"route", "metric", "refused", "because", "fact", "value", "column", "where", "aggregate",
                "min_rows", "mentions"}

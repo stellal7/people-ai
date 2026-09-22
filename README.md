@@ -1,6 +1,6 @@
 # People AI
 
-A governed AI agent on **synthetic** people data: recruiting funnel through exit, with row-level authorization, a semantic layer, an MCP server, and an evaluation harness. Built to show, on data that harms nobody, how a people-data agent is designed, governed and measured, and what the domain judgment behind the numbers looks like.
+A governed AI agent on **synthetic** people data: recruiting funnel through exit, with row-level authorization, a semantic layer, an MCP server, and an evaluation harness. It shows how such an agent is designed, governed and measured, and the domain judgment the numbers rest on.
 
 All people, names, emails and phone numbers are fake. No real HR data belongs in this repo. Scope and sequencing live in [PROJECT_PLAN.md](PROJECT_PLAN.md); the choices and their costs in [docs/decisions.md](docs/decisions.md).
 
@@ -12,11 +12,11 @@ The 51 golden questions on 2026-09-22: **44 passed (86.3%)**. The router is `cla
 |---|---|---|---|---|
 | path | took the right route, or refused when it should | 28 / 29 | 96.6% | 95% |
 | data | the number matches a fact verified in SQL | 11 / 11 | 100% | 90% |
-| trust | a judge checks the answer states its definition, scope, period and caveats | 5 / 11 | 45.5% | 80% |
+| trust | a judge checks the answer states its finding, definition, scope, period and caveats | 5 / 11 | 45.5% | 80% |
 
 The three tiers have different denominators because each question is written to test one thing: 29 questions are about taking the right path, 11 have a known number, and 11 are judged on whether a person could trust the answer.
 
-The trust score is the one to read carefully. It was 63.6% until the judge itself was checked: all 11 answers were hand-scored, the judge agreed on 9, and both misses had passed an answer whose substance sat in the returned rows rather than in anything the answer said. With the judge corrected to match the human verdicts, the same answers score 45.5%. Nothing about the agent changed between those two numbers, and the lower one is the honest baseline. See [evals/judge_calibration.md](evals/judge_calibration.md).
+Trust was 63.6% until the judge itself was checked against hand-scored verdicts on all 11 answers. It agreed on 9, and both misses had passed an answer whose substance sat in the returned rows rather than in anything the answer said. Corrected, the same answers score 45.5%: the agent did not change, the ruler did ([judge_calibration.md](evals/judge_calibration.md)).
 
 | expected route | passed | accuracy |
 |---|---|---|
@@ -26,7 +26,7 @@ The trust score is the one to read carefully. It was 63.6% until the judge itsel
 | retrieval | no questions yet, not built | n/a |
 | refuse | 10 / 11 | 90.9% |
 
-**Refusals: 10 of the 11 that must be refused were.** Eight try to reach data outside the caller's access; three ask for something this data cannot answer. Nothing outside a caller's scope has been returned in any run.
+**Refusals: 10 of the 11 that must be refused were.** Eight try to reach data outside the caller's access; three ask for something this data cannot answer. The single miss returned a definition, not data: no run has yet produced rows from outside a caller's scope, which the harness scores as `authorization_leak`.
 
 ### What the misses taught
 
@@ -41,7 +41,7 @@ The trust score is the one to read carefully. It was 63.6% until the judge itsel
 - **Authorization is resolved from data at query time, per caller.** Grants come from a table with dates, data-class floors from [access_policy.yaml](metadata/access_policy.yaml). Each caller queries their own set of views, so the same table is a different table for a different role.
 - **Refusals carry reasons.** Asking about another organisation returns what the caller may see instead, never an empty result. Empty results teach people to probe, and teach the agent that the answer is zero.
 - **The numbers are checked against facts, not vibes.** Every figure the docs quote lives in [facts.yaml](metadata/facts.yaml) with the SQL behind it, and the eval's data tier compares the agent's answer to those.
-- **Failures are categorised, so a score drop says what broke.** Fourteen categories in [evals/taxonomy.md](evals/taxonomy.md), from `wrong_grain` to `authorization_leak`, each named by the question designed to catch it.
+- **Failures are categorised, so a score drop says what broke.** Nineteen categories in [evals/taxonomy.md](evals/taxonomy.md), from `wrong_grain` to `authorization_leak`, each named by the question designed to catch it.
 
 ## What this shows about people data
 
@@ -62,8 +62,8 @@ cp .env.example .env     # set ANTHROPIC_API_KEY
 ```python
 from people_ai.agent.ask import ask
 
-answer = ask("What was voluntary attrition in 2024?", user_id=453)
-answer.rows        # [{'exits': 440, 'avg_headcount': 3974.4, 'attrition_pct': 11.1}]
+answer = ask("What was attrition in 2024?", user_id=1341)   # 1341 is the people analytics persona
+answer.rows        # [{'exits': 444, 'avg_headcount': 3987.5, 'attrition_pct': 11.1}]
 answer.definition  # the written definition that was applied
 answer.scope       # the leader tree it was computed for
 answer.notes       # suppression, truncation, low confidence

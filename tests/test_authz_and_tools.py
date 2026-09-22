@@ -108,18 +108,24 @@ def test_engagement_for_a_small_team_is_suppressed(con, who):
     """The acceptance case: asking about a team too small to report gets a suppression notice, not scores."""
     executive = who["executive_platform"]
     vp_alias = con.execute("select alias from employee where employee_id = ?", [executive]).fetchone()[0]
+    # The leader has to be inside the VP's tree *today*, because that is when grants are resolved: a team that
+    # has since moved out is refused, correctly, even for a period when it was theirs. Ordered, so the test
+    # picks the same team every run.
     small = con.execute(f"""
         with leaders as (select distinct manager_employee_id as employee_id, manager_alias as alias
                          from employee_snapshot_monthly
                          where snapshot_date = date '2024-10-31' and org_chain like '%.{vp_alias}.%'
                            and manager_alias is not null)
         select l.alias from leaders l
-        where (select count(*) from engagement_response r
+        where exists (select 1 from reporting_chain c
+                      where c.employee_id = l.employee_id and c.valid_to = date '9999-12-31'
+                        and c.org_chain like '%.{vp_alias}.%')
+          and (select count(*) from engagement_response r
                join reporting_chain c on c.employee_id = r.employee_id
                                      and r.response_date between c.valid_from and c.valid_to
                where r.survey_cycle = '2024' and c.org_chain like '%.' || l.alias || '.%'
                  and c.employee_id <> l.employee_id) between 1 and 4
-        limit 1""").fetchone()
+        order by l.alias limit 1""").fetchone()
     if not small:
         pytest.skip("no team small enough to trigger suppression in this dataset")
     result = tools.get_metric("engagement", user_id=executive, scope=small[0], cycle="2024")
