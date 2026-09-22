@@ -1,40 +1,72 @@
 # People AI
 
-A governed AI agent on **synthetic** people data: recruiting funnel through exit, with row-level authorization, a semantic layer, an MCP server, a drafting skill, and an evaluation harness.
+A governed AI agent on **synthetic** people data: recruiting funnel through exit, with row-level authorization, a semantic layer, an MCP server, and an evaluation harness. Built to show, on data that harms nobody, how a people-data agent is designed, governed and measured, and what the domain judgment behind the numbers looks like.
+
+All people, names, emails and phone numbers are fake. No real HR data belongs in this repo. Scope and sequencing live in [PROJECT_PLAN.md](PROJECT_PLAN.md); the choices and their costs in [docs/decisions.md](docs/decisions.md).
 
 ## Results
 
-One full run of the golden set on 2026-09-21: **42 of 51 questions passed (82.4%)**. The router is `claude-haiku-4-5`, and SQL and the judge are `claude-opus-5`. Full report: [evals/results/2026-09-21.md](evals/results/2026-09-21.md).
+One full run of the 51 golden questions on 2026-09-22: **46 passed (90.2%)**. The router is `claude-haiku-4-5`; SQL and the judge are `claude-opus-5`. Full report: [evals/results/2026-09-22.md](evals/results/2026-09-22.md).
 
 | tier | what it checks | passed | accuracy | target |
 |---|---|---|---|---|
-| path | took the right route, or refused when it should | 27 / 29 | 93.1% | 95% |
-| data | the number matches a verified fact | 8 / 11 | 72.7% | 90% |
-| trust | an LLM judge checks the answer states definition, scope, period and honest caveats | 7 / 11 | 63.6% | 80% |
+| path | took the right route, or refused when it should | 28 / 29 | 96.6% | 95% |
+| data | the number matches a fact verified in SQL | 11 / 11 | 100% | 90% |
+| trust | a judge checks the answer states its definition, scope, period and caveats | 7 / 11 | 63.6% | 80% |
+
+The three tiers have different denominators because each question is written to test one thing: 29 questions are about taking the right path, 11 have a known number, and 11 are judged on whether a person could trust the answer.
 
 | expected route | passed | accuracy |
 |---|---|---|
-| metric | 23 / 28 | 82.1% |
-| definition | 4 / 4 | 100.0% |
-| sql | 4 / 7 | 57.1% |
-| retrieval | not built yet, no questions | n/a |
+| metric | 24 / 28 | 85.7% |
+| definition | 4 / 4 | 100% |
+| sql | 7 / 7 | 100% |
+| retrieval | no questions yet, not built | n/a |
 | refuse | 10 / 11 | 90.9% |
 
-One question has no single expected route and passed.
+**Refusals: 10 of the 11 that must be refused were.** Eight try to reach data outside the caller's access; three ask for something this data cannot answer. Nothing outside a caller's scope has been returned in any run.
 
-**Refusals: 10 of the 11 questions that must be refused were refused.** Eight try to reach data outside the caller's access, and three ask for something the data cannot answer (an opinion, a metric that does not exist, a forecast). The miss: a manager asked "What does the AI Platform team get paid?" and got the written definition of compa-ratio instead of a refusal. No pay data was returned, but the answer should have been a refusal.
+### What the misses taught
 
-Top failure categories, from [evals/taxonomy.md](evals/taxonomy.md):
+- **Refusal has to be decided on what the question asks for, not on whether rows came back.** A manager asked what another team is paid and received the written definition of compa-ratio. No pay data was returned, so nothing leaked, but the question was still one they may not ask. The fix is to classify the data class the question is about before routing it.
+- **Governance can be wrong in the direction of too little, and it costs you numbers.** Access was resolved as of today and then applied to every historical row, so the 2,073 people who have left disappeared from history, even for the role meant to see everything. Three questions returned wrong numbers with correct SQL. Fixed on 2026-09-22 by resolving visibility at each row's date, which took the data tier from 72.7% to 100% with no change to any prompt or metric ([decision 6](docs/decisions.md)).
+- **An answer that is right but silent still fails.** Every trust-tier miss has the right number and leaves out the reason it should be believed: which definition was applied, over which period, with which caveat. That is the open work, and the score says so.
 
-- **`wrong_value` (3):** asked "How many open roles were cancelled by the January 2023 hiring freeze?", the generated SQL returned 101; the verified answer is 140.
-- **`answered_when_it_should_refuse` (1):** the AI Platform pay question above.
-- **`refused_when_it_should_answer` (1):** asked "How do people rate cmann2 as a manager?", the agent refused because the manager has left and "their team no longer exists", although the survey responses from before they left in July 2025 are in the data.
+## What this shows about building agents on governed data
 
-After `wrong_value`, six categories are tied at one failure each. The two shown are the ones the taxonomy treats as trust failures. No question that should have been refused returned data rows, which is what the harness scores as `authorization_leak`.
+- **Definitions are metadata, not prompts.** Thirteen metrics are defined once in [metadata/metrics.yaml](metadata/metrics.yaml), implemented once, and tested against a hand-computed fixture company. The model picks a metric; it never invents one.
+- **Authorization is resolved from data at query time, per caller.** Grants come from a table with dates, data-class floors from [access_policy.yaml](metadata/access_policy.yaml). Each caller queries their own set of views, so the same table is a different table for a different role.
+- **Refusals carry reasons.** Asking about another organisation returns what the caller may see instead, never an empty result. Empty results teach people to probe, and teach the agent that the answer is zero.
+- **The numbers are checked against facts, not vibes.** Every figure the docs quote lives in [facts.yaml](metadata/facts.yaml) with the SQL behind it, and the eval's data tier compares the agent's answer to those.
+- **Failures are categorised, so a score drop says what broke.** Fourteen categories in [evals/taxonomy.md](evals/taxonomy.md), from `wrong_grain` to `authorization_leak`, each named by the question designed to catch it.
 
-It is a portfolio project and a way to learn, by building, the vocabulary of AI products on sensitive data. Scope, principles and sequencing live in [PROJECT_PLAN.md](PROJECT_PLAN.md). The data model and its known answers live in [docs/Synthetic_Talent_Lifecycle_Schema.md](docs/Synthetic_Talent_Lifecycle_Schema.md).
+## What this shows about people data
 
-All people, names, emails and phone numbers are fake. No real HR data belongs in this repo.
+- **The org chart is a time series, not a snapshot.** Chains are stored with dates, so "everyone under this leader" has a different answer on every date. Read through today's chart instead, a director who took over two teams in September 2024 appears to have started that year with 302 people when they had 77.
+- **Headcount moves for five reasons, not two.** Hires, exits, transfers in, transfers out, and leave. In one VP's 2024, net growth of 108 people was produced by 598 individual moves, and 79 of that growth came from flows other than hiring. The bridge reconciles: `python analysis/growth_bridge.py mmorales 2024-01-01 2024-12-31`.
+- **As-is reporting loses the people who left.** A director's organisation lost 33 people in 2024 and shows 3 through today's chart, because the other 30 no longer have a placement anywhere. Company-wide that is 2,073 people, which is why attrition built that way never reconciles.
+- **Definitions decide the answer more than the SQL does.** Attrition over average headcount rather than ending headcount, exits owned by the leader who had the person on their last working day, time to fill measured from approval rather than posting, people on leave employed but not counted.
+- **Some questions should not be answerable.** Engagement and pay aggregates are suppressed below five people and a caller cannot lower the threshold, a manager's effectiveness score excludes their own answers, and candidate contact details are available to nobody but the recruiting system.
+
+The worked examples, with the numbers and the commands that produce them, are in [docs/people_data_notes.md](docs/people_data_notes.md).
+
+## Asking a question in English (needs an API key)
+
+```bash
+cp .env.example .env     # set ANTHROPIC_API_KEY
+```
+
+```python
+from people_ai.agent.ask import ask
+
+answer = ask("What was voluntary attrition in 2024?", user_id=453)
+answer.rows        # [{'exits': 440, 'avg_headcount': 3974.4, 'attrition_pct': 11.1}]
+answer.definition  # the written definition that was applied
+answer.scope       # the leader tree it was computed for
+answer.notes       # suppression, truncation, low confidence
+```
+
+A cheap model (`claude-haiku-4-5`) routes the question to a metric, a definition, guarded SQL, or an honest "this data can't answer that". A strong model (`claude-opus-5`) writes SQL when no metric fits, with one repair attempt if the guard rejects it. Refusals come back as answers with reasons, not exceptions.
 
 ## How it fits together
 
@@ -121,24 +153,6 @@ Metrics take dates, a leader alias, allowlisted breakdowns and named options, ne
 
 Six tools: `list_metrics`, `get_definition`, `get_metric`, `describe_leader`, `search_people`, `run_readonly_sql`. Each resolves the caller's grants from `user_role` on the date, checks the requested leader against them, applies the data-class floor from [metadata/access_policy.yaml](metadata/access_policy.yaml), and logs the call. Asking about someone else's organization is a refusal with a reason, never an empty table. See [docs/architecture.md](docs/architecture.md).
 
-## Asking a question in English (needs an API key)
-
-```bash
-cp .env.example .env     # set ANTHROPIC_API_KEY
-```
-
-```python
-from people_ai.agent.ask import ask
-
-answer = ask("What was voluntary attrition in 2024?", user_id=453)
-answer.rows        # [{'exits': 440, 'avg_headcount': 3974.4, 'attrition_pct': 11.1}]
-answer.definition  # the written definition that was applied
-answer.scope       # the leader tree it was computed for
-answer.notes       # suppression, truncation, low confidence
-```
-
-A cheap model (`claude-haiku-4-5`) routes the question to a metric, a definition, guarded SQL, or an honest "this data can't answer that". A strong model (`claude-opus-5`) writes SQL when no metric fits, with one repair attempt if the guard rejects it. Refusals come back as answers with reasons, not exceptions.
-
 ## Evals
 
 ```bash
@@ -182,11 +196,13 @@ Acme Corp, January 2021 to December 2025:
 |---|---|---|
 | 1 | Synthetic data + integrity tests | Done |
 | 2 | Semantic layer: 13 metrics, defined once and tested | Done |
-| 3 | Authorization + MCP server: 6 tools, per-caller views | Done |
+| 3 | Authorization + MCP server: 6 tools, per-caller views, visibility resolved at each row's date | Done |
 | 4 | Agent: routing + text-to-SQL (4a) | Done; multi-step (4b) next |
-| 5 | Skill: talent review drafting | |
+| 5 | Skill: talent review drafting | Not started |
 | 6 | Evals: 51 golden questions, three-tier scoring, failure taxonomy | Done; see Results |
-| 7 | Optional: Snowflake mirror + dashboard | |
+| 7 | Snowflake mirror + dbt semantic layer | Next phase |
+
+Retrieval over the policy corpus is written but not wired in: 8 policy documents with numbered clauses live in `corpus/policies/`, with 21 golden questions waiting for the route.
 
 ## Repo layout
 
@@ -196,7 +212,13 @@ src/people_ai/synthetic/           simulation: params, dims, engine, recruiting,
 metadata/                          tables.yaml, facts.yaml, metrics.yaml, doc templates (source of truth for meaning)
 src/people_ai/metadata/            load and validate metadata, render docs
 src/people_ai/semantic/            layer 2: leader hierarchy, metric registry, metric functions
-tests/                             integrity, planted-signal, metadata and semantic-layer tests
-docs/                              generated schema doc and metric definitions, architecture
+src/people_ai/access/              layer 3: grants, policy floors, row visibility
+src/people_ai/mcp_server/          layer 3: the six tools and the SQL guard
+src/people_ai/agent/               layer 4: router, text-to-SQL, ask()
+corpus/policies/                   policy documents with numbered clauses, for retrieval
+analysis/                          one-off analyses: growth_bridge.py
+evals/                             golden questions, runner, taxonomy, dated results
+tests/                             integrity, planted-signal, metadata, semantic, authorization, visibility
+docs/                              schema and metric definitions (generated), architecture, decisions, people data notes
 data/                              generated DuckDB + parquet
 ```
