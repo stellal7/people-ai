@@ -195,17 +195,21 @@ Acme Corp, January 2021 to December 2025:
 
 ## Layers
 
-| # | Layer | Status |
+| # | Layer | What it is |
 |---|---|---|
-| 1 | Synthetic data + integrity tests | Done |
-| 2 | Semantic layer: 13 metrics, defined once and tested | Done |
-| 3 | Authorization + MCP server: 6 tools, per-caller views, visibility resolved at each row's date | Done |
-| 4 | Agent: routing + text-to-SQL (4a) | Done; multi-step (4b) next |
-| 5 | Skill: talent review drafting | Not started |
-| 6 | Evals: 51 golden questions, three-tier scoring, failure taxonomy | Done; see Results |
-| 7 | Snowflake mirror + dbt semantic layer | Next phase |
+| 1 | Data | Event-sourced synthetic company, 2021 to 2025, with integrity tests and seven planted patterns |
+| 2 | Semantic layer | 13 metrics defined once in metadata, tested against a hand-computed fixture |
+| 3 | Governed access | Grants and data-class floors from data, six MCP tools, per-caller views, visibility at each row's date |
+| 4 | Agent | Routing on a cheap model, text-to-SQL on a strong one, guarded and repaired |
+| 6 | Evals | 51 golden questions, three tiers, failure taxonomy, calibrated judge |
 
-Retrieval over the policy corpus is written but not wired in: 8 policy documents with numbered clauses live in `corpus/policies/`, with 21 golden questions waiting for the route.
+Numbering follows [PROJECT_PLAN.md](PROJECT_PLAN.md), which holds the full roadmap.
+
+### Next
+
+1. **Business rules, retrieved and cited.** 8 policy documents with numbered clauses are written in `corpus/policies/`, with 21 golden questions waiting for the route. Three of the six trust-tier failures need exactly this: context the numbers do not carry.
+2. **An answer composer,** so every answer states its finding, definition, scope, period and caveats in a fixed order rather than handing over rows.
+3. **Marts in dbt and a Snowflake mirror,** building the same two tables from the event log, with the Python-generated snapshot as the test oracle.
 
 ## Repo layout
 

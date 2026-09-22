@@ -242,7 +242,7 @@ Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_te
 - Given an HRBP user and an org, the agent produces a complete draft with every number traceable to a logged tool call, and the checks pass.
 - Given a manager user for a different org, the agent refuses with an authorization message.
 
-### Layer 6: Evaluation harness (harness DONE, 2026-09-18; first scored run needs credentials)
+### Layer 6: Evaluation harness (DONE, 2026-09-18; scored runs from 2026-09-21, judge calibrated 2026-09-22)
 
 **Goal:** know whether the agent is right before anyone relies on it.
 
