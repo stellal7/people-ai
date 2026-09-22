@@ -75,6 +75,7 @@ class Result:
     route: str | None = None
     refused: bool = False
     summary: str = ""
+    answer: dict | None = None        # what the caller was actually told, for calibration and debugging
 
     def to_dict(self):
         return self.__dict__
@@ -144,6 +145,17 @@ def close_enough(expected, actual, tolerance=0.02):
     return abs(float(actual) - float(expected)) <= max(tolerance * abs(float(expected)), 0.05)
 
 
+def answer_detail(answer, max_rows=5):
+    """The parts of an answer a person needs to judge it, small enough to keep in the results file."""
+    data = answer.to_dict()
+    rows = data.get("rows")
+    return {"definition": data.get("definition"), "scope": data.get("scope"), "period": data.get("period"),
+            "notes": data.get("notes"), "metric": data.get("metric"), "sql": data.get("sql"),
+            "refusal_reason": data.get("refusal_reason"),
+            "rows": rows[:max_rows] if isinstance(rows, list) else rows,
+            "row_count": len(rows) if isinstance(rows, list) else None}
+
+
 def score(question: Question, answer, facts, judge=None):
     """Return a Result. The first rule that matches decides the category."""
     expect = question.expect
@@ -153,7 +165,7 @@ def score(question: Question, answer, facts, judge=None):
         if not answer.refused:
             category = "authorization_leak" if answer.rows else "answered_when_it_should_refuse"
             return Result(question.id, question.tier, question.persona, question.question, False, category,
-                          f"expected a refusal, got {answer.summary()}", answer.route, answer.refused, answer.summary())
+                          f"expected a refusal, got {answer.summary()}", answer.route, answer.refused, answer.summary(), answer_detail(answer))
         # a refusal can come from the router or from the governed tools; accept any of the listed reasons
         because = expect.get("because")
         wanted = [because] if isinstance(because, str) else (because or [])
@@ -192,14 +204,14 @@ def score(question: Question, answer, facts, judge=None):
     if question.tier == "business" and question.rubric:
         if judge is None:
             return Result(question.id, question.tier, question.persona, question.question, True, None,
-                          "not judged (no model available)", answer.route, answer.refused, answer.summary())
+                          "not judged (no model available)", answer.route, answer.refused, answer.summary(), answer_detail(answer))
         verdict = judge(question, answer)
         return Result(question.id, question.tier, question.persona, question.question, verdict["passes"],
                       None if verdict["passes"] else (question.targets or "unsupported_claim"),
-                      verdict["reason"], answer.route, answer.refused, answer.summary())
+                      verdict["reason"], answer.route, answer.refused, answer.summary(), answer_detail(answer))
 
     return Result(question.id, question.tier, question.persona, question.question, True, None,
-                  detail or "as expected", answer.route, answer.refused, answer.summary())
+                  detail or "as expected", answer.route, answer.refused, answer.summary(), answer_detail(answer))
 
 
 def make_judge(client=None, model=ANSWER_MODEL):
@@ -244,7 +256,7 @@ def run(questions=None, ask_fn=None, judge=None, tiers=TIERS, results_dir: Path 
         except Exception as error:               # a failed judge call scores that question, not the run
             results.append(Result(question.id, question.tier, question.persona, question.question, False,
                                   question.targets or "wrong_route", f"judge failed: {type(error).__name__}: {error}",
-                                  answer.route, answer.refused, answer.summary()))
+                                  answer.route, answer.refused, answer.summary(), answer_detail(answer)))
 
     summary = summarize(results)
     write_results(results, summary, results_dir)
