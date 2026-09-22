@@ -2,7 +2,7 @@
 
 An open portfolio project: a governed AI agent on synthetic people data, recruiting funnel through exit, with row-level authorization, a semantic layer, an MCP server, a drafting skill, and an evaluation harness.
 
-Owner: Stella Liao. Purpose: demonstrate end-to-end capability on AI for people data (data model, governance, agents, evals), and serve as a learning vehicle for the vocabulary used in AI product interviews.
+Owner: Stella Liao. Purpose: demonstrate end-to-end capability on AI for people data: data model, governance, agents, evals.
 
 This file is the source of truth for scope and sequencing. Read it, `README.md`, and `docs/Synthetic_Talent_Lifecycle_Schema.md` before starting any layer.
 
@@ -20,7 +20,7 @@ This file is the source of truth for scope and sequencing. Read it, `README.md`,
 ## 1. Tech choices
 
 - Python 3.11+, `uv` or `pip` with `requirements.txt`.
-- Storage: DuckDB (`data/people.duckdb`) as the local warehouse. Parquet exports for portability. Later optional: Snowflake mirror for interview relevance (layer 7).
+- Storage: DuckDB (`data/people.duckdb`) as the local warehouse. Parquet exports for portability. Later: Snowflake mirror, so the same semantic layer runs on a cloud warehouse (layer 7).
 - Models: Anthropic API (Claude). Use a cheaper model for routing and classification, a stronger model for SQL generation and drafting. Model choice is a config, not a constant.
 - Agent framework: start with plain Python and the Anthropic SDK tool-use API. Do not add LangChain or another framework unless a layer needs it; the point is to understand the mechanics.
 - MCP: official Python MCP SDK. The server is the only way the agent touches data.
@@ -325,7 +325,7 @@ Text columns (`resume_text`, `feedback_text`, `exit_interview_text`, `comment_te
 - **Compa-ratio:** base salary divided by band mid for the employee's job and location. Aggregated only except for permitted roles.
 - **Engagement score:** mean of engagement_score for a cycle and scope; suppressed when respondents < 5.
 
-## 6. Interview vocabulary this project should make concrete
+## 6. Concepts this project makes concrete
 
 grain · event sourcing vs snapshots · effective dating · point-in-time correctness · flattened hierarchy / materialized path (org chain) · semantic layer · row-level authorization at query time · MCP (tools, resources, governed access) · agent vs workflow · routing · text-to-SQL · RAG for definitions · skills as reusable procedures · tool logging / observability · golden set · execution vs data vs business-context accuracy · failure taxonomy · LLM-as-judge · human in the loop · model routing by cost · suppression thresholds · least autonomy
 
