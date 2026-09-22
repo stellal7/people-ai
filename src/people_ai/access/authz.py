@@ -39,10 +39,28 @@ class Grant:
         return self.scope_type == "all" or self.leader_depth == 1
 
 
+VISIBILITIES = ("as_was", "current_org")
+
+# The date a row belongs to. Under `as_was` visibility a row is checked against the caller's tree on this date,
+# not on the date the question is asked. Tables missing here have no date of their own and fall back to the
+# question date.
+ROW_DATES = {
+    "employment_event": "effective_date",
+    "employee_snapshot_monthly": "snapshot_date",
+    "termination": "termination_date - 1",        # the chain ends the day before the termination date
+    "compensation": "effective_date",
+    "performance_rating": "rating_date",
+    "engagement_response": "response_date",
+    "reporting_chain": "valid_from",
+    "requisition": "opened_date",
+}
+
+
 @dataclass(frozen=True)
 class Policy:
     floors: dict
     min_group: dict
+    visibility: str = "as_was"
 
     def floor(self, roles, data_class):
         """The most permissive floor across the user's roles."""
@@ -54,7 +72,10 @@ def load_policy(path: Path = METADATA_DIR / "access_policy.yaml", catalog=None) 
     raw = yaml.safe_load(path.read_text())
     catalog = catalog or load_catalog()
     errors = []
-    check_keys(raw, {"version", "min_group", "policy"}, set(), path.name, errors)
+    check_keys(raw, {"version", "min_group", "policy"}, {"visibility"}, path.name, errors)
+    visibility = raw.get("visibility", "as_was")
+    if visibility not in VISIBILITIES:
+        errors.append(f"visibility: unknown value {visibility}, expected one of {list(VISIBILITIES)}")
     classes = set(catalog.sensitivity_levels)
     for role, rules in raw.get("policy", {}).items():
         missing = classes - rules.keys()
@@ -70,7 +91,7 @@ def load_policy(path: Path = METADATA_DIR / "access_policy.yaml", catalog=None) 
             errors.append(f"min_group: unknown data class {data_class}")
     if errors:
         raise MetadataError("metadata/access_policy.yaml is invalid:\n  " + "\n  ".join(errors))
-    return Policy(floors=raw["policy"], min_group=raw["min_group"])
+    return Policy(floors=raw["policy"], min_group=raw["min_group"], visibility=visibility)
 
 
 POLICY = load_policy()
@@ -172,6 +193,35 @@ def check_scope(con, access: Access, scope, as_of=None, fallback=None):
     raise AuthorizationError(
         f"user {access.user_id} may not see {requested.alias}'s organization; their access covers "
         f"{' and '.join(access.scope_aliases) or 'nothing'}")
+
+
+def visible_rows_sql(access: Access, table, *, alias="t", id_column="employee_id", as_of=None, schema="",
+                     direct_reports_only=False):
+    """
+    The predicate deciding which rows of `table` this caller may see.
+
+    Under `as_was` visibility a row is visible if the person was inside the caller's tree on the date the row
+    belongs to: their pay on the day it took effect, their exit on their last working day. Under `current_org`
+    the caller's tree today is applied to every row, which is what most HR reporting does and what hides the
+    people who have since left. The setting lives in metadata/access_policy.yaml so the difference can be
+    measured rather than argued about.
+    """
+    if access.sees_everything and not direct_reports_only:
+        return "true"
+    visibility = access.policy.visibility
+    if visibility != "as_was":
+        on_date = f"{h.date_literal(as_of or access.as_of)} between rc.valid_from and rc.valid_to"
+    elif table in ROW_DATES:
+        on_date = f"{alias}.{ROW_DATES[table]} between rc.valid_from and rc.valid_to"
+    else:
+        on_date = "true"                     # a table with no date of its own: ever inside the tree counts
+    if direct_reports_only:
+        membership = f"rc.manager_employee_id = {int(access.user_id)}"
+    else:
+        leaders = access.leader_ids or [-1]
+        membership = "(" + " or ".join(f"list_contains(rc.chain_ids, {int(i)})" for i in leaders) + ")"
+    return (f"exists (select 1 from {schema}reporting_chain rc "
+            f"where rc.employee_id = {alias}.{id_column} and {on_date} and {membership})")
 
 
 def visible_employees_sql(access: Access, as_of=None, schema=""):

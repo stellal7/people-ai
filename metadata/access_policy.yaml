@@ -17,6 +17,14 @@
 # organization, pay only for the people reporting to them, and engagement only as suppressed aggregates.
 version: 1
 
+# Which rows a grant reaches, once it is established that the caller may see a tree at all.
+#   as_was       a row is visible if the person was inside the tree on the date the row belongs to: their pay on
+#                the day it took effect, their exit on their last working day. History stays comparable, and the
+#                people who have left are still counted in the org they left.
+#   current_org  today's tree is applied to every row, which is what most HR reporting does. Simpler, and it
+#                silently drops everyone who has left and moves history when a reorg moves a team.
+visibility: as_was
+
 min_group:
   engagement: 5
   compensation: 5

@@ -20,8 +20,8 @@ from decimal import Decimal
 import duckdb
 import pandas as pd
 
-from people_ai.access.authz import (Access, AuthorizationError, check_scope, direct_reports_sql, resolve_scope,
-                                    visible_employees_sql)
+from people_ai.access.authz import (Access, AuthorizationError, check_scope, resolve_scope,
+                                    visible_employees_sql, visible_rows_sql)
 from people_ai.config import DB_PATH, LOG_DIR
 from people_ai.metadata.catalog import load_catalog
 from people_ai.semantic import hierarchy as h
@@ -302,27 +302,31 @@ def scoped_views(con, access: Access, as_of):
     The real database is attached read-only as `source` and is not reachable from the query text, so a query can
     only see what was created here.
     """
-    visible = visible_employees_sql(access, as_of, schema="source.")
     exposed = []
 
     def view(name, sql):
         con.execute(f"create or replace view {name} as {sql}")
         exposed.append(name)
 
+    def scoped(table, id_column="employee_id", direct_reports_only=False):
+        """One table, filtered to the rows this caller may see, row by row on each row's own date."""
+        where = visible_rows_sql(access, table, alias="t", id_column=id_column, as_of=as_of, schema="source.",
+                                 direct_reports_only=direct_reports_only)
+        view(table, f"select t.* from source.{table} t where {where}")
+
     for table in REFERENCE_TABLES:
         view(table, f"select * from source.{table}")
     if access.floor("people") == "individual":
         for table in PEOPLE_TABLES:
-            view(table, f"select * from source.{table} where employee_id in ({visible})")
+            scoped(table)
     for table, data_class in (("compensation", "compensation"), ("performance_rating", "performance")):
         floor = access.floor(data_class)
         if floor == "individual":
-            view(table, f"select * from source.{table} where employee_id in ({visible})")
+            scoped(table)
         elif floor == "direct_reports":
-            view(table, f"select * from source.{table} "
-                        f"where employee_id in ({direct_reports_sql(access, as_of, schema='source.')})")
+            scoped(table, direct_reports_only=True)
     if access.floor("recruiting") == "individual":
-        view("requisition", f"select * from source.requisition where hiring_manager_employee_id in ({visible})")
+        scoped("requisition", id_column="hiring_manager_employee_id")
         view("application", "select a.* from source.application a join requisition r on r.req_id = a.req_id")
         for table in RECRUITING_TABLES[1:]:
             view(table, f"select t.* from source.{table} t join application a on a.application_id = t.application_id")

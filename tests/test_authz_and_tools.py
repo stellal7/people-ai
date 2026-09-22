@@ -188,15 +188,32 @@ def test_run_readonly_sql_gives_each_role_a_different_table_set(who, end_of_data
 
 
 @pytest.mark.parametrize("persona", ["manager_checkout_lead", "executive_platform"])
-def test_pay_rows_are_limited_to_the_caller_s_direct_reports(con, who, end_of_data, persona):
-    """Managers, including VPs, see pay for the people they manage directly and nobody else."""
+def test_pay_rows_are_limited_to_people_the_caller_managed_at_the_time(con, who, end_of_data, persona):
+    """
+    Managers, including VPs, see a pay row only if that person reported to them on the day it took effect.
+
+    Under `as_was` visibility that includes people who have since moved or left, and only for the period they
+    were the caller's own report. It never includes the rest of the tree.
+    """
     user_id = who[persona]
-    result = tools.run_readonly_sql("select count(distinct employee_id) as people from compensation",
-                                    user_id=user_id, as_of=end_of_data)
-    direct = con.execute("""select count(*) from reporting_chain
-                            where ? between valid_from and valid_to and manager_employee_id = ?""",
-                         [end_of_data, user_id]).fetchone()[0]
-    assert result["rows"][0]["people"] == direct > 0
+    result = tools.run_readonly_sql("select distinct employee_id from compensation",
+                                    user_id=user_id, as_of=end_of_data, limit=1000)
+    seen = {row["employee_id"] for row in result["rows"]}
+    ever_reported = {r[0] for r in con.execute(
+        "select distinct employee_id from reporting_chain where manager_employee_id = ?", [user_id]).fetchall()}
+    today = {r[0] for r in con.execute(
+        """select employee_id from reporting_chain
+           where ? between valid_from and valid_to and manager_employee_id = ?""",
+        [end_of_data, user_id]).fetchall()}
+    assert today and today <= seen <= ever_reported
+
+    outside = tools.run_readonly_sql(
+        """select count(*) as rows_outside from compensation c
+           where not exists (select 1 from reporting_chain rc
+                             where rc.employee_id = c.employee_id and rc.manager_employee_id = ?
+                             and c.effective_date between rc.valid_from and rc.valid_to)""".replace("?", str(user_id)),
+        user_id=user_id, as_of=end_of_data)
+    assert outside["rows"][0]["rows_outside"] == 0
 
 
 def test_results_are_limited(who, end_of_data):
