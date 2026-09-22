@@ -42,24 +42,37 @@ All four applied after the human verdicts came in. None of them touch the agent.
    it failed on route first and was counted as a trust failure. Routing belongs to the path tier, which has its
    own questions for it, so a trust result now notes the route it took without failing on it.
 
-## Re-run with the tightened judge, 2026-09-22 (incomplete)
+## Re-run with the tightened judge, 2026-09-22
 
-`evals/results/20260922T133912.md`. The run stopped early: the API credit balance ran out, so three questions
-(`reorg_headcount_after`, `scope_missing_metric`, `scope_future`) were never judged and are recorded as failures
-for want of a verdict. They are not evidence of anything.
+Two attempts. The first stopped when the API credit balance ran out and left three questions unjudged; it is
+kept as `evals/results/20260922T133912.md` and proves nothing. The complete run is
+`evals/results/20260922T134927.md`: **5 of 11 passed (45.5%)**, against 7 of 11 from the lenient judge.
 
-Of the seven that were judged, four passed. The tightening did what the calibration predicted: `compa_by_family`
-now fails, because the answer still never says that Data is the family furthest below band. `funnel_by_source`
-and `attrition_involuntary_2023` fail as before.
+| | lenient judge | tightened judge | human verdict |
+|---|---|---|---|
+| passed | 7 | 5 | 6 |
 
-An eighth, `hires_vs_internal_moves`, failed on an expected metric name rather than on its rubric. Trust
-questions are now exempt from both the route and the metric expectation, so the next run judges it properly.
+The two questions the calibration predicted would flip did flip. `compa_by_family` fails because the answer
+still never says that Data is the family furthest below band, and `scope_future` fails because it declines to
+forecast without ever saying when the data ends.
 
-The corrected baseline is therefore not yet measured. On the human verdicts it should read 5 of 11 rather than
-the 7 of 11 the lenient judge gave, and that is the number the knowledge store should be measured against once
-credits allow a full run.
+**One new disagreement, in the other direction.** `hires_vs_internal_moves` was judged for the first time, now
+that trust questions no longer fail on a route or metric expectation, and the tightened judge failed it: the
+breakdown keeps internal, external and boomerang separate, which is what the rubric asks, but the answer never
+states the finding in words. The human verdict was a pass. So rule 1 is stricter than the rubric it is applied
+to, and one of the two has to move:
 
-## Sample size
+- either the rubric is rewritten to require the answer to state which group the starters came from, which makes
+  the judge right and raises the bar for every similar question,
+- or rule 1 is narrowed to apply only when the rubric asks for a finding rather than a distinction.
 
-Eleven questions means each is worth 9 percentage points, and this is one run. Treat movement of one or two
-questions as noise, not progress.
+Until that is decided the trust baseline is **5 of 11**, and the disagreement is 10 of 11 rather than 11 of 11.
+
+## What this baseline is for
+
+It is the number the knowledge store gets measured against. Three of the six failures need context the numbers
+do not carry: that a restructuring drove 2023 involuntary attrition, that the drop in njones's organisation was
+a team moving rather than attrition, and that the funnel includes internal applicants who convert differently.
+Two more, `compa_by_family` and `hires_vs_internal_moves`, need the answer to state its finding rather than
+return rows, which is the answer composer's job. One, `scope_future`, needs the refusal to say when the data
+ends.

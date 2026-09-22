@@ -6,15 +6,17 @@ All people, names, emails and phone numbers are fake. No real HR data belongs in
 
 ## Results
 
-One full run of the 51 golden questions on 2026-09-22: **46 passed (90.2%)**. The router is `claude-haiku-4-5`; SQL and the judge are `claude-opus-5`. Full report: [evals/results/2026-09-22.md](evals/results/2026-09-22.md).
+The 51 golden questions on 2026-09-22: **44 passed (86.3%)**. The router is `claude-haiku-4-5`; SQL and the judge are `claude-opus-5`. Full report: [evals/results/2026-09-22.md](evals/results/2026-09-22.md).
 
 | tier | what it checks | passed | accuracy | target |
 |---|---|---|---|---|
 | path | took the right route, or refused when it should | 28 / 29 | 96.6% | 95% |
 | data | the number matches a fact verified in SQL | 11 / 11 | 100% | 90% |
-| trust | a judge checks the answer states its definition, scope, period and caveats | 7 / 11 | 63.6% | 80% |
+| trust | a judge checks the answer states its definition, scope, period and caveats | 5 / 11 | 45.5% | 80% |
 
 The three tiers have different denominators because each question is written to test one thing: 29 questions are about taking the right path, 11 have a known number, and 11 are judged on whether a person could trust the answer.
+
+The trust score is the one to read carefully. It was 63.6% until the judge itself was checked: all 11 answers were hand-scored, the judge agreed on 9, and both misses had passed an answer whose substance sat in the returned rows rather than in anything the answer said. With the judge corrected to match the human verdicts, the same answers score 45.5%. Nothing about the agent changed between those two numbers, and the lower one is the honest baseline. See [evals/judge_calibration.md](evals/judge_calibration.md).
 
 | expected route | passed | accuracy |
 |---|---|---|
@@ -30,7 +32,8 @@ The three tiers have different denominators because each question is written to 
 
 - **Refusal has to be decided on what the question asks for, not on whether rows came back.** A manager asked what another team is paid and received the written definition of compa-ratio. No pay data was returned, so nothing leaked, but the question was still one they may not ask. The fix is to classify the data class the question is about before routing it.
 - **Governance can be wrong in the direction of too little, and it costs you numbers.** Access was resolved as of today and then applied to every historical row, so the 2,073 people who have left disappeared from history, even for the role meant to see everything. Three questions returned wrong numbers with correct SQL. Fixed on 2026-09-22 by resolving visibility at each row's date, which took the data tier from 72.7% to 100% with no change to any prompt or metric ([decision 6](docs/decisions.md)).
-- **An answer that is right but silent still fails.** Every trust-tier miss has the right number and leaves out the reason it should be believed: which definition was applied, over which period, with which caveat. That is the open work, and the score says so.
+- **An answer that is right but silent still fails.** Five of the six trust-tier misses return the right rows and never state the finding: which job family is furthest below band, that a headcount drop was a team moving rather than attrition, that the funnel includes internal applicants who convert differently. That is the open work, and the score says so.
+- **Check the ruler before optimising against it.** The judge was scoring answers as passes when its own written reason named what the rubric required and the answer lacked. Calibrating it cost 18 points of trust accuracy and bought a number worth acting on.
 
 ## What this shows about building agents on governed data
 
