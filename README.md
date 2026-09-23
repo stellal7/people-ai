@@ -26,17 +26,19 @@ A cheap model (`claude-haiku-4-5`) routes the question to a metric, a definition
 
 ## Results
 
-The 51 golden questions on 2026-09-22: **44 passed (86.3%)**. The router is `claude-haiku-4-5`; SQL and the judge are `claude-opus-5`. Full report, including accuracy by route: [evals/results/2026-09-22.md](evals/results/2026-09-22.md).
+The 51 golden questions, measured on 2026-09-22. The router is `claude-haiku-4-5`; SQL and the judge are `claude-opus-5`. Reports in [evals/results/](evals/results/).
 
 | tier | what it checks | passed | accuracy | target |
 |---|---|---|---|---|
 | path | took the right route, or refused when it should | 28 / 29 | 96.6% | 95% |
 | data | the number matches a fact verified in SQL | 11 / 11 | 100% | 90% |
-| trust | a judge checks the answer states its finding, definition, scope, period and caveats | 5 / 11 | 45.5% | 80% |
+| trust | a judge checks the answer states its finding, definition, scope, period and caveats | 8 / 11 | 72.7% | 80% |
+
+Path and data come from the full run; trust from a re-run of its 11 questions after the answer composer landed the same day.
 
 The tiers have different denominators because each question tests one thing: 29 are about taking the right path, 11 have a known number, and 11 are judged on whether a person could trust the answer. Of the 51, **11 must be refused**: eight try to reach data outside the caller's access, three ask for something this data cannot answer. Ten were refused. The miss returned a definition rather than data, and no run has yet produced rows from outside a caller's scope.
 
-Trust was 63.6% until the judge itself was checked against hand-scored verdicts on all 11 answers. It agreed on 9, and both misses had passed an answer whose substance sat in the returned rows rather than in anything the answer said. Corrected, the same answers score 45.5%: the agent did not change, the ruler did ([judge_calibration.md](evals/judge_calibration.md)).
+Trust reads 72.7% after two corrections in opposite directions. The judge was checked against hand-scored verdicts on all 11 answers: it agreed on 9, and both misses had passed an answer whose substance sat in the returned rows rather than in anything the answer said. Correcting the judge dropped the score to 45.5% without the agent changing at all ([judge_calibration.md](evals/judge_calibration.md)). Making answers state their finding then raised it to 72.7%.
 
 ## What this shows about building agents on governed data
 
@@ -60,7 +62,7 @@ The worked examples, with the numbers and the commands that produce them, are in
 
 - **Refusal has to be decided on what the question asks for, not on whether rows came back.** A manager asked what another team is paid and received the written definition of compa-ratio. Nothing leaked, but the question was still one they may not ask.
 - **Governance can be wrong in the direction of too little, and it costs you numbers.** Access was resolved as of today and applied to every historical row, so the 2,073 people who have left disappeared from history, even for the role meant to see everything. Three questions returned wrong numbers with correct SQL; fixing it took the data tier from 72.7% to 100% with no change to any prompt or metric ([decision 6](docs/decisions.md)).
-- **An answer that is right but silent still fails.** Five of the six trust misses return the right rows and never state the finding, and the score says so. That is the open work: an answer composer, and business rules the agent can retrieve and cite.
+- **An answer that is right but silent still fails.** Most trust misses returned correct rows and never said what they showed, which is why answers are now composed: the finding first, computed from the rows rather than written by a model. The three that remain need context no number carries, such as the fact that a restructuring happened in February 2023, so the next work is business rules the agent can retrieve and cite.
 
 ## How it works
 
