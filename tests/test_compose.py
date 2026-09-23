@@ -25,11 +25,36 @@ def test_a_small_split_is_read_out_in_full():
     assert c.finding(a) == "Hires by candidate_type: external 803, internal 245."
 
 
+def test_a_breakdown_of_six_is_read_out_in_full():
+    """A summary that hides four of six recorded reasons is not an answer to "why did people leave"."""
+    rows = [{"exit_reason": r, "exits": e, "share_pct": p} for r, e, p in
+            [("comp", 66, 33.0), ("competing_offer", 53, 26.5), ("career_growth", 38, 19.0),
+             ("personal", 20, 10.0), ("relocation", 16, 8.0), ("other", 7, 3.5)]]
+    stated = c.finding(answer(metric="exit_reasons", rows=rows))
+    assert all(reason in stated for reason in ("comp", "competing_offer", "career_growth", "other"))
+
+
+def test_a_very_long_breakdown_names_the_notable_end_and_the_next_few():
+    rows = [{"leader": chr(97 + i), "exits": i, "avg_headcount": 100, "attrition_pct": float(i)}
+            for i in range(12)]
+    stated = c.finding(answer(metric="attrition", rows=rows))
+    assert stated.startswith("l has the highest attrition at 11%, then k 10%, j 9%, i 8%, of 12 groups.")
+
+
+def test_how_the_question_was_read_is_stated():
+    """A period nobody asked for has to be declared, not just reported."""
+    a = answer(metric="attrition", rows=[{"exits": 10, "avg_headcount": 100, "attrition_pct": 10.0}],
+               reason="the question named no period, so the last full calendar year was used",
+               definition="D", scope="company", period=["2025-01-01", "2025-12-31"])
+    assert "How this was read: the question named no period" in c.compose(a)
+
+
 def test_a_long_breakdown_names_the_notable_end():
     """compa_ratio declares low as notable, so the answer names the family furthest below band."""
     rows = [{"job_family": f, "employees": 100, "mean_compa": v}
             for f, v in [("Data", 0.893), ("Engineering", 1.02), ("Sales", 1.05), ("Support", 0.99),
-                         ("Design", 1.01)]]
+                         ("Design", 1.01), ("Finance", 1.04), ("Legal", 1.07), ("Ops", 0.97),
+                         ("Marketing", 1.03)]]
     assert c.finding(answer(metric="compa_ratio", rows=rows)).startswith(
         "Data has the lowest mean compa at 0.893")
 
@@ -37,14 +62,16 @@ def test_a_long_breakdown_names_the_notable_end():
 def test_precision_survives():
     """A ratio rounded to one decimal would read 0.9 and lose the point."""
     rows = [{"job_family": f, "mean_compa": v} for f, v in
-            [("Data", 0.893), ("A", 1.0), ("B", 1.1), ("C", 1.2), ("D", 1.3)]]
+            [("Data", 0.893), ("A", 1.0), ("B", 1.1), ("C", 1.2), ("D", 1.3), ("E", 1.4), ("F", 1.5),
+             ("G", 1.6), ("H", 1.7)]]
     assert "0.893" in c.finding(answer(metric="compa_ratio", rows=rows))
 
 
 def test_attrition_names_the_worst_leader_not_the_best():
     """attrition declares high as notable: the leader to look at is the one losing most people."""
     rows = [{"leader": a, "exits": e, "avg_headcount": 100, "attrition_pct": p}
-            for a, e, p in [("aa", 5, 5.0), ("bb", 22, 22.0), ("cc", 9, 9.0), ("dd", 3, 3.0), ("ee", 7, 7.0)]]
+            for a, e, p in [("aa", 5, 5.0), ("bb", 22, 22.0), ("cc", 9, 9.0), ("dd", 3, 3.0), ("ee", 7, 7.0),
+                            ("ff", 4, 4.0), ("gg", 6, 6.0), ("hh", 8, 8.0), ("ii", 2, 2.0)]]
     assert c.finding(answer(metric="attrition", rows=rows)).startswith("bb has the highest attrition at 22%")
 
 

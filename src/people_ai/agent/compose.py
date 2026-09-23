@@ -18,7 +18,8 @@ from datetime import date
 from people_ai.semantic.definitions import load_metrics
 
 REGISTRY = load_metrics()
-MAX_LISTED = 4                  # a split small enough to read out; beyond this, name the extreme instead
+MAX_LISTED = 8                  # a breakdown small enough to read out in full
+TOP_N = 3                       # beyond that, the notable end plus the next few, never the extreme alone
 
 
 def _is_number(value):
@@ -87,12 +88,12 @@ def finding(answer, registry=REGISTRY):
         return f"{_label(column).capitalize()} by {' and '.join(dimensions) or 'group'}: {listed}."
 
     notable = headline.get("notable", "neither")
-    if notable == "low":
-        pick, word = min(scored, key=lambda r: r[column]), "lowest"
-    else:
-        pick, word = max(scored, key=lambda r: r[column]), "highest"
-    return (f"{named(pick)} has the {word} {_label(column)} at {_pretty(pick.get(column), unit)}, "
-            f"across {len(rows)} groups.")
+    ranked = sorted(scored, key=lambda r: r[column], reverse=notable != "low")
+    word = "lowest" if notable == "low" else "highest"
+    leader, rest = ranked[0], ranked[1:TOP_N + 1]
+    tail = ", then " + ", ".join(f"{named(r)} {_pretty(r.get(column), unit)}" for r in rest) if rest else ""
+    return (f"{named(leader)} has the {word} {_label(column)} at {_pretty(leader.get(column), unit)}{tail}, "
+            f"of {len(rows)} groups.")
 
 
 def coverage_sentence(period=None):
@@ -146,6 +147,9 @@ def compose(answer, registry=REGISTRY, coverage=True):
     if answer.period:
         start, end = (answer.period + [None, None])[:2] if isinstance(answer.period, list) else (answer.period, None)
         lines.append(f"Period: {start} to {end}" if end else f"As at: {start}")
+    if answer.reason and answer.rows is not None:
+        # how the question was read: which period, scope or kind was assumed when the question did not say.
+        lines.append(f"How this was read: {answer.reason}")
     notes = [n for n in (answer.notes or []) if n]
     if notes:
         lines.append("Caveats: " + "; ".join(notes))
