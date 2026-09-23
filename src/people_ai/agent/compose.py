@@ -13,12 +13,20 @@ Fixed order, because a reader should not have to hunt:
 `headline` in metadata/metrics.yaml names the column that carries the finding and which end of it is worth
 naming, so "which job family is furthest below band" is a lookup, not a guess.
 """
+import re
 from datetime import date
 
 from people_ai.semantic.definitions import load_metrics
 
 REGISTRY = load_metrics()
 MAX_LISTED = 8                  # a breakdown small enough to read out in full
+# Generated SQL has no registry entry to say which column is the measure, so guess conservatively: never rank by
+# something that is plainly a label, an identifier or a calendar year.
+NOT_A_MEASURE = re.compile(r"(^|_)(year|month|quarter|week|day|date|id|level|code)($|_)", re.I)
+MEASURE_WORDS = re.compile(r"(count|exits|hires|people|employees|n|total|sum|pct|percent|rate|ratio|days|score|"
+                           r"median|mean|avg|share|applications|candidates|reqs|requisitions)", re.I)
+PERIOD_IN_QUESTION = re.compile(r"(\b(19|20)\d\d\b|january|february|march|april|may|june|july|august|september|"
+                                r"october|november|december|last year|this year|ytd|quarter|q[1-4]\b|month)", re.I)
 TOP_N = 3                       # beyond that, the notable end plus the next few, never the extreme alone
 
 
@@ -51,6 +59,21 @@ def _dimension_columns(rows, headline_column):
             if k != headline_column and (v is None or not _is_number(v)) and k != "suppressed"]
 
 
+def _looks_like_years(values):
+    return all(isinstance(v, int) and 1900 <= v <= 2100 for v in values if v is not None)
+
+
+def _measure_column(rows):
+    """For generated SQL: the column worth ranking by, or None when nothing obviously is."""
+    numeric = [k for k, v in rows[0].items() if _is_number(v)]
+    candidates = [k for k in numeric
+                  if not NOT_A_MEASURE.search(k) and not _looks_like_years([r.get(k) for r in rows])]
+    named = [k for k in candidates if MEASURE_WORDS.search(k)]
+    if named:
+        return named[-1]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def finding(answer, registry=REGISTRY):
     """One sentence stating what the rows show, or None when there is nothing safe to say."""
     if answer.refused or not answer.rows:
@@ -63,10 +86,11 @@ def finding(answer, registry=REGISTRY):
     rows = answer.rows
 
     if column is None or column not in rows[0]:
-        numeric = [k for k, v in rows[0].items() if _is_number(v)]
-        column = numeric[0] if numeric else None
+        column = _measure_column(rows)
         if column is None:
-            return f"{len(rows)} row{'s' if len(rows) != 1 else ''} returned."
+            columns = ", ".join(rows[0].keys())
+            return (f"{len(rows)} row{'s' if len(rows) != 1 else ''} returned ({columns}); read the rows, as this "
+                    f"query has no defined measure to rank by.")
 
     if len(rows) == 1:
         row = rows[0]
@@ -147,6 +171,8 @@ def compose(answer, registry=REGISTRY, coverage=True):
     if answer.period:
         start, end = (answer.period + [None, None])[:2] if isinstance(answer.period, list) else (answer.period, None)
         lines.append(f"Period: {start} to {end}" if end else f"As at: {start}")
+    if answer.period and not PERIOD_IN_QUESTION.search(answer.question or ""):
+        lines.append("The question named no period, so the one above was chosen for you; say a period to change it.")
     if answer.reason and answer.rows is not None:
         # how the question was read: which period, scope or kind was assumed when the question did not say.
         lines.append(f"How this was read: {answer.reason}")

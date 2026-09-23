@@ -81,7 +81,8 @@ def test_a_suppressed_group_says_so_instead_of_reporting_nothing():
 
 
 def test_the_order_is_fixed():
-    a = answer(metric="attrition", rows=[{"exits": 10, "avg_headcount": 100, "attrition_pct": 10.0}],
+    a = answer(metric="attrition", question="What was attrition in 2024?",
+               rows=[{"exits": 10, "avg_headcount": 100, "attrition_pct": 10.0}],
                definition="Terminations over average month-end headcount.", scope="mmorales",
                period=["2024-01-01", "2024-12-31"], notes=["suppressed below 5"])
     lines = c.compose(a).splitlines()
@@ -117,3 +118,27 @@ def test_nothing_is_invented_when_there_is_nothing_to_say():
 def test_every_metric_declares_which_column_carries_its_finding(metric):
     headline = c.REGISTRY.get(metric).headline
     assert headline and headline["column"] in {col["name"] for col in c.REGISTRY.get(metric).value_columns}
+
+
+def test_generated_sql_is_never_ranked_by_a_calendar_year():
+    """A query returning a year column once produced "performance has the highest year at 2,024"."""
+    rows = [{"year": 2023, "exit_reason": r, "exits": e} for r, e in
+            [("performance", 40), ("restructuring", 57), ("misconduct", 9)]]
+    stated = c.finding(answer(route="sql", rows=rows, sql="select ..."))
+    assert "2,024" not in stated and "year" not in stated
+    assert "restructuring 57" in stated
+
+
+def test_sql_with_no_obvious_measure_says_so_instead_of_ranking():
+    rows = [{"employee_id": i, "job_level": 5 + i} for i in range(6)]
+    stated = c.finding(answer(route="sql", rows=rows, sql="select ..."))
+    assert "no defined measure" in stated and "employee_id, job_level" in stated
+
+
+def test_a_period_the_question_never_asked_for_is_flagged():
+    unasked = answer(metric="attrition", question="How is attrition looking?", period=["2024-01-01", "2024-12-31"],
+                     rows=[{"exits": 10, "avg_headcount": 100, "attrition_pct": 10.0}])
+    asked = answer(metric="attrition", question="What was attrition in 2024?", period=["2024-01-01", "2024-12-31"],
+                   rows=[{"exits": 10, "avg_headcount": 100, "attrition_pct": 10.0}])
+    assert "named no period" in c.compose(unasked)
+    assert "named no period" not in c.compose(asked)
